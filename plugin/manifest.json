@@ -1,0 +1,10 @@
+{
+  "id": "delve",
+  "name": "Delve",
+  "version": "0.1.0",
+  "minAppVersion": "1.5.0",
+  "description": "AI-assisted personalised learning environment for Obsidian.",
+  "author": "Ian",
+  "authorUrl": "https://github.com/ianmoran11",
+  "isDesktopOnly": false
+}
