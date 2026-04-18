@@ -1,10 +1,10 @@
-// Stage 4 — Obsidian Canvas writer
-// TODO: generate a .canvas JSON file visualising the course structure and prerequisite graph
+// TODO: Stage 4 — Write Obsidian Canvas flowchart of curriculum
+import type DelvePlugin from '../../main';
 import type { Curriculum } from '../interfaces';
 
 export async function writeCanvas(
-  _curriculum: Curriculum,
-  _outputDir: string,
+  _plugin: DelvePlugin,
+  _curriculum: Curriculum
 ): Promise<void> {
-  throw new Error('Canvas writer not yet implemented');
+  throw new Error('Canvas writer not yet implemented.');
 }

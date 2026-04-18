@@ -1,6 +1,3 @@
-# Stage 1 — Concept Extraction (TODO)
+# Stage 1: Concept Extraction Prompt
 
-This prompt will instruct the model to extract foundational concepts and terminology
-from the selected scope and any available source material.
-
-Variables: {{topic}}, {{scopeSummary}}, {{sourceContext}}, {{mode}}
+TODO — to be designed when Stage 1 is implemented.
