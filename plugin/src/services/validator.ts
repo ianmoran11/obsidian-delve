@@ -44,6 +44,18 @@ export const Stage0ResponseSchema = z.object({
   taxonomy: z.array(TaxonomyNodeSchema).min(1),
 });
 
+export const DisaggregateResponseSchema = z.object({
+  nodes: z.array(TaxonomyNodeSchema).min(2).max(6),
+});
+
+export const ExpandResponseSchema = z.object({
+  children: z.array(TaxonomyNodeSchema).min(2).max(6),
+});
+
+export const SuggestRelatedResponseSchema = z.object({
+  topics: z.array(TaxonomyNodeSchema).min(1).max(5),
+});
+
 export const ConceptSchema = z.object({
   id: z.string().min(1),
   title: z.string().min(1),

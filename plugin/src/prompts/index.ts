@@ -2,6 +2,9 @@ import type DelvePlugin from '../../main';
 
 export type PromptName =
   | 'stage0-taxonomy'
+  | 'stage0-disaggregate'
+  | 'stage0-expand'
+  | 'stage0-suggest-related'
   | 'stage1-concepts'
   | 'stage3-curriculum'
   | 'stage4-lesson';
@@ -34,17 +37,67 @@ Requirements:
 - Maximum 3 levels deep
 - Every node MUST have: id (unique kebab-case string), title, description
 - IDs must be globally unique within the taxonomy
-- Cover the full breadth of "{{topic}}" comprehensively
-- Write descriptions that help a learner understand what each area covers`,
+- Cover the full breadth of "{{topic}}" comprehensively`,
 
-  'stage1-concepts':
-    '// TODO: Stage 1 concept extraction prompt — to be implemented',
+  'stage0-disaggregate': `A learner is scoping a course on "{{topic}}".
 
-  'stage3-curriculum':
-    '// TODO: Stage 3 curriculum design prompt — to be implemented',
+They want to split the topic "{{nodeTitle}}" ({{nodeDescription}}) into more specific, distinct alternatives at the same level of the taxonomy.
 
-  'stage4-lesson':
-    '// TODO: Stage 4 lesson generation prompt — to be implemented',
+Current selections: {{selectedScope}}
+
+Return a JSON object:
+{
+  "nodes": [
+    { "id": "unique-kebab-id", "title": "More Specific Topic", "description": "One sentence." }
+  ]
+}
+
+Requirements:
+- 2 to 5 nodes
+- Each node should be a distinct, non-overlapping sub-area that together cover what "{{nodeTitle}}" covered
+- IDs must be unique kebab-case strings not already in the taxonomy
+- Do NOT include "{{nodeTitle}}" itself in the result`,
+
+  'stage0-expand': `A learner is scoping a course on "{{topic}}".
+
+They want to see more detailed subtopics under "{{nodeTitle}}" ({{nodeDescription}}).
+
+Return a JSON object:
+{
+  "children": [
+    { "id": "unique-kebab-id", "title": "Detailed Subtopic", "description": "One sentence." }
+  ]
+}
+
+Requirements:
+- 3 to 6 child nodes
+- Each should be a concrete, learnable sub-area within "{{nodeTitle}}"
+- IDs must be unique kebab-case strings
+- Focus on depth: these are fine-grained subtopics, not broad alternatives`,
+
+  'stage0-suggest-related': `A learner is building a course on "{{topic}}".
+
+Existing top-level topics already in their taxonomy: {{existingTopics}}
+Their current selections: {{selectedScope}}
+
+Suggest 2 to 5 additional top-level topics that are related and complementary to "{{topic}}" but NOT already covered by the existing list.
+
+Return a JSON object:
+{
+  "topics": [
+    { "id": "unique-kebab-id", "title": "Related Topic", "description": "One sentence explaining relevance." }
+  ]
+}
+
+Requirements:
+- 2 to 5 topics
+- Must NOT duplicate any existing topic
+- Should be genuinely related and useful alongside the existing taxonomy
+- IDs must be unique kebab-case strings`,
+
+  'stage1-concepts': '// TODO: Stage 1 concept extraction prompt — to be implemented',
+  'stage3-curriculum': '// TODO: Stage 3 curriculum design prompt — to be implemented',
+  'stage4-lesson': '// TODO: Stage 4 lesson generation prompt — to be implemented',
 };
 
 export async function loadPrompt(

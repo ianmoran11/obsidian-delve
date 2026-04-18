@@ -41,9 +41,7 @@ export class DelveSettingsTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('Model')
-      .setDesc(
-        'OpenRouter model ID (e.g. anthropic/claude-3-5-sonnet, google/gemini-flash-1.5).'
-      )
+      .setDesc('OpenRouter model ID (e.g. anthropic/claude-3-5-sonnet, google/gemini-flash-1.5).')
       .addText(text =>
         text
           .setValue(this.plugin.settings.defaultModel)
@@ -83,10 +81,13 @@ export class DelveSettingsTab extends PluginSettingTab {
     });
 
     const promptNames: Array<{ key: string; label: string }> = [
-      { key: 'stage0-taxonomy', label: 'Stage 0: Taxonomy' },
-      { key: 'stage1-concepts', label: 'Stage 1: Concepts' },
-      { key: 'stage3-curriculum', label: 'Stage 3: Curriculum' },
-      { key: 'stage4-lesson', label: 'Stage 4: Lesson' },
+      { key: 'stage0-taxonomy', label: 'Stage 0: Initial taxonomy' },
+      { key: 'stage0-disaggregate', label: 'Stage 0: Split node' },
+      { key: 'stage0-expand', label: 'Stage 0: Expand node' },
+      { key: 'stage0-suggest-related', label: 'Stage 0: Suggest related topics' },
+      { key: 'stage1-concepts', label: 'Stage 1: Concept extraction' },
+      { key: 'stage3-curriculum', label: 'Stage 3: Curriculum design' },
+      { key: 'stage4-lesson', label: 'Stage 4: Lesson generation' },
     ];
 
     for (const { key, label } of promptNames) {

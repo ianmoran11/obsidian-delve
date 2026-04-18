@@ -45,7 +45,7 @@
 .delve-taxonomy__hint {
   color: var(--text-muted);
   font-size: 0.9em;
-  margin: 4px 0 0;
+  margin: 4px 0 8px;
 }
 .delve-taxonomy__tree {
   flex: 1;
@@ -95,4 +95,56 @@
 .delve-taxonomy__confirm {
   width: 100%;
   justify-content: center;
+}
+
+/* ── Node action buttons ── */
+.delve-taxonomy__node-actions {
+  display: flex;
+  gap: 4px;
+  margin-left: auto;
+  flex-shrink: 0;
+  align-items: center;
+}
+.delve-taxonomy__action-btn {
+  padding: 3px 8px;
+  min-height: 32px;
+  font-size: 0.78em;
+  border-radius: 4px;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary);
+  color: var(--text-muted);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, color 0.15s;
+}
+.delve-taxonomy__action-btn:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+.delve-taxonomy__action-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.delve-taxonomy__node-loading {
+  font-size: 0.8em;
+  color: var(--text-muted);
+  font-style: italic;
+  margin-left: auto;
+  padding: 4px 0;
+}
+
+/* ── Suggest related (header button) ── */
+.delve-taxonomy__suggest-btn {
+  width: 100%;
+  margin-top: 6px;
+  font-size: 0.85em;
+  min-height: 36px;
+  justify-content: center;
+}
+.delve-taxonomy__suggest-loading {
+  color: var(--text-muted);
+  font-style: italic;
+  font-size: 0.85em;
+  margin-top: 6px;
+  padding: 4px 0;
 }
