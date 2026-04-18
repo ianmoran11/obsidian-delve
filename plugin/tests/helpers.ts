@@ -1,80 +1,73 @@
-import type { AllPluginData, Stage0Cache, TaxonomyNode } from '../src/interfaces';
+import type { TaxonomyNode, Stage0Cache } from '../src/interfaces';
 
-// ─── Data factories ──────────────────────────────────────────────────────────
-
-export function makeTaxonomy(): TaxonomyNode[] {
-  return [
-    {
-      id: 'ml',
-      title: 'Machine Learning',
-      description: 'Core concepts behind learning from data.',
-      children: [
-        {
-          id: 'ml-supervised',
-          title: 'Supervised Learning',
-          description: 'Learning from labelled training examples.',
-        },
-        {
-          id: 'ml-unsupervised',
-          title: 'Unsupervised Learning',
-          description: 'Finding structure in unlabelled data.',
-        },
-      ],
-    },
-    {
-      id: 'dl',
-      title: 'Deep Learning',
-      description: 'Neural network architectures and training techniques.',
-    },
-  ];
-}
-
-export function makeStage0Cache(overrides?: Partial<Stage0Cache>): Stage0Cache {
+export function makeTaxonomyNode(overrides?: Partial<TaxonomyNode>): TaxonomyNode {
   return {
-    courseId: 'test-course-abc123',
-    seedTopic: 'Machine Learning',
-    taxonomy: makeTaxonomy(),
-    selectedScope: ['ml', 'ml-supervised', 'ml-unsupervised'],
-    scopeSummary: 'Machine Learning, Supervised Learning, Unsupervised Learning',
-    completedAt: '2026-01-01T00:00:00.000Z',
+    id: 'node-1',
+    title: 'Test Node',
+    description: 'A test node',
     ...overrides,
   };
 }
 
-export function makeEmptyPluginData(): AllPluginData {
-  return { settings: {}, courses: {}, activeCourseId: undefined };
-}
-
-// ─── In-memory data store helper ────────────────────────────────────────────
-
-export function makeDataStore(initial?: Partial<AllPluginData>) {
-  let store: AllPluginData = { settings: {}, courses: {}, ...initial };
+export function makeStage0Cache(overrides?: Partial<Stage0Cache>): Stage0Cache {
   return {
-    load: async (): Promise<AllPluginData> => ({ ...store }),
-    save: async (data: AllPluginData): Promise<void> => {
-      store = { ...data };
-    },
-    getStore: () => store,
+    courseId: 'test-course-1',
+    seedTopic: 'Machine Learning',
+    taxonomy: [makeTaxonomyNode()],
+    selectedScope: ['node-1'],
+    scopeSummary: 'Test Node',
+    completedAt: new Date().toISOString(),
+    ...overrides,
   };
 }
 
-// ─── Mock vault adapter ────────────────────────────────────────────────────
-
-export function makeMockVaultAdapter() {
-  const fs: Record<string, string> = {};
+export function makeMockPlugin() {
   return {
-    fs,
-    adapter: {
-      async write(path: string, content: string): Promise<void> {
-        fs[path] = content;
+    settings: {
+      openRouterApiKey: 'test-key',
+      defaultModel: 'anthropic/claude-3-5-sonnet',
+      promptOverrides: {} as Record<string, string>,
+    },
+    app: {
+      vault: {
+        adapter: {
+          write: async (_path: string, _content: string) => {},
+          read: async (_path: string) => '{}',
+          exists: async (_path: string) => false,
+          remove: async (_path: string) => {},
+        },
+        getFiles: () => [],
+        getAbstractFileByPath: (_path: string) => null,
+        read: async () => '',
       },
-      async read(path: string): Promise<string> {
-        if (fs[path] === undefined) throw new Error(`Not found: ${path}`);
-        return fs[path];
-      },
-      async remove(path: string): Promise<void> {
-        delete fs[path];
+      workspace: {
+        getLeaf: () => ({
+          setViewState: async () => {},
+        }),
+        revealLeaf: () => {},
       },
     },
+    llmService: {
+      callJson: async <T>() => ({}) as T,
+      callText: async () => '',
+      listModels: async () => [] as string[],
+    },
+    cacheService: {
+      readStage: async () => undefined,
+      writeStage: async () => {},
+      readCourse: async () => ({}),
+      writeMeta: async () => {},
+      listCourses: async () => [],
+      clearCourse: async () => {},
+    },
+    lockService: {
+      acquire: async () => {},
+      release: async () => {},
+      read: async () => null,
+      isLocked: async () => false,
+    },
+    loadData: async () => null,
+    saveData: async () => {},
+    loadPrompt: async (name: string) => `mock prompt for ${name}`,
   };
 }
