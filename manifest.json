@@ -3,7 +3,7 @@
   "name": "Delve",
   "version": "0.1.0",
   "minAppVersion": "1.5.0",
-  "description": "AI-assisted personalised learning environment for Obsidian. Build adaptive courses from any topic using a five-stage LLM pipeline.",
+  "description": "AI-driven personalised learning environment for Obsidian. Turns your vault into a structured course using a 5-stage LLM pipeline.",
   "author": "Ian",
   "authorUrl": "https://github.com/ianmoran11",
   "isDesktopOnly": false

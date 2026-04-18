@@ -1,51 +1,39 @@
 # Delve
 
-Delve is an Obsidian plugin that turns a dedicated vault into a personalised, AI-assisted learning environment.
+An Obsidian plugin that turns a dedicated vault into a personalised, AI-assisted learning environment.
 
-Given a broad topic — such as machine learning, linear algebra, or Kubernetes — Delve builds a structured course with scoped modules, lessons, navigation notes, and a visual curriculum map. It uses a five-stage LLM pipeline through OpenRouter.
+Delve guides you from a broad topic to a structured course with scoped modules, lessons, navigation notes, and a visual curriculum map — using a five-stage LLM pipeline powered by OpenRouter.
 
-## Stages
+## Features
 
-| Stage | Name | Description |
-|-------|------|-------------|
-| 0 | Topic Explorer | Generates a hierarchical taxonomy; user selects scope |
-| 1 | Concept Extraction | Extracts foundational concepts from the scoped topic |
-| 2 | Diagnostic | Learner self-assesses proficiency via Likert scale |
-| 3 | Curriculum Design | Generates a proficiency-aware syllabus |
-| 4 | Content Generation | Writes lesson files, MOCs, Canvas, and Index into the vault |
+- **Stage 0 — Topic Explorer**: Enter a seed topic; get a hierarchical taxonomy to scope your course
+- **Stage 1 — Concept Extraction**: Extract foundational concepts from the scoped topic
+- **Stage 2 — Diagnostic**: Self-assess your familiarity with each concept
+- **Stage 3 — Curriculum Design**: Generate a proficiency-aware syllabus
+- **Stage 4 — Content Generation**: Write lessons, MOCs, Canvas map, and index into your vault
 
-## Requirements
+## Installation (BRAT)
 
-- Obsidian 1.5.0+
-- An [OpenRouter](https://openrouter.ai) API key
+1. Install [BRAT](https://github.com/TfTHacker/obsidian42-brat) from Community Plugins
+2. **Settings → BRAT → Add Beta Plugin** → enter `ianmoran11/obsidian-delve`
+3. Enable **Delve** in Community Plugins
+4. Add your OpenRouter API key in **Settings → Delve**
 
 ## Vault Structure
 
-Delve expects the following folders in your vault:
+Delve expects a dedicated vault with these folders:
 
 ```
-1-Raw_Sources/       # Original PDFs or images (optional)
-2-Markdown_Sources/  # Extracted Markdown source material (optional)
-3-Synthesized/       # Reserved for future use
-4-Curriculum/        # Generated course output
+1-Raw_Sources/        # Your PDFs and images
+2-Markdown_Sources/   # Extracted Markdown (optional)
+3-Synthesized/        # Reserved for future use
+4-Curriculum/         # Generated course files
 ```
 
-Source material is optional. Delve works in three modes:
-- **Knowledge-only**: No sources provided; model uses general knowledge
-- **Augmented**: Sources provided but incomplete; model supplements with general knowledge
-- **Grounded**: Sources provided; model prefers them
+## Usage
 
-## Installation
+Run the command **Delve: Start new course** (Cmd/Ctrl+P) to begin.
 
-Install via [BRAT](https://github.com/TfTHacker/obsidian42-brat) during development.
+## Platform Support
 
-## Development
-
-```bash
-cd plugin
-npm install
-npm run dev      # watch mode
-npm run build    # production build
-npm run test     # run tests
-npm run typecheck
-```
+Delve runs on both Obsidian desktop (macOS, Windows, Linux) and Obsidian mobile (Android, iOS). It uses only Obsidian-safe APIs (`requestUrl`, `Vault`, `DataAdapter`) and avoids Node.js built-ins.
