@@ -1,9 +1,9 @@
-// Stage 2 — Frictionless Diagnostic
-// Input:  Stage1Cache (concept list)
-// Output: Stage2Cache (proficiency map from Likert-scale self-assessment)
-// TODO: implement
-import type { CourseId } from '../interfaces';
+import type DelvePlugin from '../../main';
 
-export async function runStage2(_courseId: CourseId): Promise<void> {
-  throw new Error('Stage 2 not yet implemented');
+// TODO: Stage 2 — Frictionless Diagnostic
+export async function runStage2(
+  _plugin: DelvePlugin,
+  _courseId: string
+): Promise<void> {
+  throw new Error('Stage 2 (Diagnostic) is not yet implemented.');
 }

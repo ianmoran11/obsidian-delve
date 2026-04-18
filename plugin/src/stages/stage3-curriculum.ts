@@ -1,9 +1,9 @@
-// Stage 3 — Curriculum Design
-// Input:  Stage0Cache (scope), Stage1Cache (concepts), Stage2Cache (proficiency)
-// Output: Stage3Cache (full curriculum, editable before Stage 4)
-// TODO: implement
-import type { CourseId } from '../interfaces';
+import type DelvePlugin from '../../main';
 
-export async function runStage3(_courseId: CourseId): Promise<void> {
-  throw new Error('Stage 3 not yet implemented');
+// TODO: Stage 3 — Curriculum Design
+export async function runStage3(
+  _plugin: DelvePlugin,
+  _courseId: string
+): Promise<void> {
+  throw new Error('Stage 3 (Curriculum Design) is not yet implemented.');
 }

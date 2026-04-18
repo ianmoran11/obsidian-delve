@@ -1,118 +1,82 @@
-import { App, Notice } from 'obsidian';
-import type { LlmService } from '../services/openrouter';
-import type { CacheService } from '../services/cache';
-import type { LockService } from '../services/lock';
-import type { ContextService } from '../services/context';
-import { validate, TaxonomyResponseSchema, validateWithRepair } from '../services/validator';
-import type { TaxonomyNode, Stage0Cache, CourseId } from '../interfaces';
-import { loadPrompt } from '../prompts';
-import { TaxonomyView, TAXONOMY_VIEW_TYPE } from '../ui/taxonomy-view';
+import { Notice } from 'obsidian';
+import type DelvePlugin from '../../main';
+import type { TaxonomyNode, Stage0Cache } from '../interfaces';
+import { Stage0ResponseSchema, validateAndRepair } from '../services/validator';
+import { TAXONOMY_VIEW_TYPE } from '../constants';
 
 export async function runStage0(
-  app: App,
-  courseId: CourseId,
+  plugin: DelvePlugin,
   seedTopic: string,
-  llm: LlmService,
-  cache: CacheService,
-  lock: LockService,
-  context: ContextService,
-  promptOverride?: string,
+  courseId: string
 ): Promise<void> {
-  await lock.acquire(courseId, 0);
+  await plugin.lockService.acquire(courseId, 0);
 
   try {
-    new Notice(`Delve: Generating taxonomy for \u201c${seedTopic}\u201d\u2026`);
+    new Notice('Generating topic taxonomy…');
 
-    const sourceCtx = await context.buildContext();
-    const prompt = loadPrompt('stage0-taxonomy', promptOverride);
-
-    const raw = await llm.callJson<unknown>(prompt, {
-      topic: seedTopic,
-      sourceContext:
-        sourceCtx.text
-          ? `\n\nSource material (${sourceCtx.mode} mode):\n${sourceCtx.text.slice(0, 8_000)}`
-          : '',
-      mode: sourceCtx.mode,
-    });
-
-    const { taxonomy } = await validateWithRepair(
-      TaxonomyResponseSchema,
-      raw,
-      async () => {
-        new Notice('Delve: Repairing taxonomy response\u2026');
-        return llm.callJson<unknown>(
-          'The following JSON failed schema validation. Return only a corrected version that matches the required schema.\n\nOriginal:\n{{original}}',
-          { original: JSON.stringify(raw) },
-        );
-      },
+    const promptTemplate = await plugin.loadPrompt('stage0-taxonomy');
+    const raw = await plugin.llmService.callJson<{ taxonomy: TaxonomyNode[] }>(
+      promptTemplate,
+      { topic: seedTopic }
     );
 
-    // Persist with empty scope (to be confirmed by user in TaxonomyView)
-    const draft: Stage0Cache = {
-      courseId,
-      seedTopic,
-      taxonomy,
-      selectedScope: [],
-      scopeSummary: '',
-      completedAt: '',
-    };
-    await cache.writeStage(courseId, 0, draft);
+    const validated = await validateAndRepair(
+      raw,
+      Stage0ResponseSchema,
+      plugin.llmService,
+      'Fix the taxonomy JSON so every node has id (kebab-case string), title, and description fields.'
+    );
 
-    await openTaxonomyView(app, courseId, taxonomy, async (selected, summary) => {
-      const completed: Stage0Cache = {
-        ...draft,
-        selectedScope: selected,
-        scopeSummary: summary,
-        completedAt: new Date().toISOString(),
-      };
-      await cache.writeStage(courseId, 0, completed);
-      await lock.release();
-      new Notice('Delve: Scope confirmed. Stage 0 complete \u2014 ready for concept extraction.');
+    const leaf = plugin.app.workspace.getLeaf(false);
+    await leaf.setViewState({
+      type: TAXONOMY_VIEW_TYPE,
+      active: true,
+      state: {
+        courseId,
+        seedTopic,
+        taxonomy: validated.taxonomy,
+      },
     });
-  } catch (err) {
-    await lock.release();
-    throw err;
+    plugin.app.workspace.revealLeaf(leaf);
+  } catch (e) {
+    await plugin.lockService.release();
+    new Notice(`Delve: taxonomy generation failed — ${(e as Error).message}`);
+    throw e;
   }
 }
 
-/** Re-open the TaxonomyView for an already-generated (but unconfirmed) taxonomy. */
-export async function reopenTaxonomyView(
-  app: App,
-  courseId: CourseId,
+export async function confirmScope(
+  plugin: DelvePlugin,
+  courseId: string,
+  seedTopic: string,
   taxonomy: TaxonomyNode[],
-  cache: CacheService,
-  lock: LockService,
+  selectedScope: string[]
 ): Promise<void> {
-  const draft = await cache.readStage(courseId, 0);
-  if (!draft) return;
+  const scopeSummary = selectedScope
+    .map(id => findNode(taxonomy, id)?.title ?? id)
+    .join(', ');
 
-  await openTaxonomyView(app, courseId, taxonomy, async (selected, summary) => {
-    const completed: Stage0Cache = {
-      ...draft,
-      selectedScope: selected,
-      scopeSummary: summary,
-      completedAt: new Date().toISOString(),
-    };
-    await cache.writeStage(courseId, 0, completed);
-    await lock.release();
-    new Notice('Delve: Scope confirmed. Stage 0 complete.');
-  });
+  const cache: Stage0Cache = {
+    courseId,
+    seedTopic,
+    taxonomy,
+    selectedScope,
+    scopeSummary,
+    completedAt: new Date().toISOString(),
+  };
+
+  await plugin.cacheService.writeStage(courseId, 0, cache);
+  await plugin.lockService.release();
+  new Notice('Scope confirmed. Ready for concept extraction.');
 }
 
-async function openTaxonomyView(
-  app: App,
-  courseId: CourseId,
-  taxonomy: TaxonomyNode[],
-  onConfirm: (selectedIds: string[], scopeSummary: string) => Promise<void>,
-): Promise<void> {
-  const existing = app.workspace.getLeavesOfType(TAXONOMY_VIEW_TYPE);
-  const leaf = existing.length > 0 ? existing[0] : app.workspace.getLeaf(true);
-
-  await leaf.setViewState({
-    type: TAXONOMY_VIEW_TYPE,
-    active: true,
-    state: { courseId, taxonomy, onConfirm } satisfies import('../ui/taxonomy-view').TaxonomyViewState,
-  });
-
-  app.workspace.revealLeaf(leaf);
+function findNode(nodes: TaxonomyNode[], id: string): TaxonomyNode | undefined {
+  for (const n of nodes) {
+    if (n.id === id) return n;
+    if (n.children) {
+      const found = findNode(n.children, id);
+      if (found) return found;
+    }
+  }
+  return undefined;
 }
