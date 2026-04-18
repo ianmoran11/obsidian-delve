@@ -1,6 +1,9 @@
 name: Build and Release
 
 on:
+  push:
+    branches:
+      - 'claude/init-delve-plugin-4pOR2'
   workflow_dispatch:
     inputs:
       version:
@@ -15,7 +18,7 @@ jobs:
       contents: write
 
     steps:
-      - name: Checkout branch
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           ref: claude/init-delve-plugin-4pOR2
@@ -24,8 +27,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: plugin/package-lock.json
 
       - name: Install dependencies
         working-directory: plugin
@@ -38,28 +39,29 @@ jobs:
       - name: Verify build output
         run: |
           if [ ! -f plugin/main.js ]; then
-            echo "ERROR: plugin/main.js not found after build"
+            echo "ERROR: plugin/main.js not found"
             exit 1
           fi
-          echo "Build output size: $(wc -c < plugin/main.js) bytes"
+          echo "Build: $(wc -c < plugin/main.js) bytes"
 
-      - name: Create GitHub Release
+      - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event.inputs.version }}
-          name: Delve ${{ github.event.inputs.version }}
+          tag_name: '0.1.0'
+          name: 'Delve 0.1.0'
           body: |
-            ## Delve ${{ github.event.inputs.version }}
-
-            ### What’s included
-            - Stage 0: Topic Explorer — fully implemented
-            - Stages 1–4: Architecture scaffolded, implementation in progress
+            ## Delve 0.1.0
 
             ### Install via BRAT
             1. Install [BRAT](https://github.com/TfTHacker/obsidian42-brat) from Community Plugins
             2. **Settings → BRAT → Add Beta Plugin** → `ianmoran11/obsidian-delve`
             3. Enable **Delve** in Community Plugins
             4. Add your OpenRouter API key in **Settings → Delve**
+
+            ### What’s in this release
+            - Stage 0: Topic Explorer — fully implemented
+            - Scope tree manipulation: Split, Expand, Suggest Related
+            - Stages 1–4: Scaffolded, in progress
           files: |
             plugin/main.js
             manifest.json
