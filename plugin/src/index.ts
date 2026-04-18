@@ -1,1 +1,1 @@
-export { DelvePlugin } from './plugin';
+export { default as DelvePlugin } from '../main';

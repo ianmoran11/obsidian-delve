@@ -1,194 +1,126 @@
-import { Plugin, Notice, WorkspaceLeaf } from 'obsidian';
-import { DelveSettings, DelveSettingsTab, DEFAULT_SETTINGS } from './settings';
+import { Plugin, Notice } from 'obsidian';
+import { DEFAULT_SETTINGS, DelveSettings, DelveSettingsTab } from './settings';
+import { OpenRouterService } from './services/openrouter';
 import { CacheService } from './services/cache';
 import { LockService } from './services/lock';
-import { OpenRouterService } from './services/openrouter';
 import { ContextService } from './services/context';
 import { TopicInputModal } from './ui/topic-input-modal';
+import { TaxonomyView } from './ui/taxonomy-view';
 import { ResumeModal } from './ui/resume-modal';
-import { TaxonomyView, TAXONOMY_VIEW_TYPE } from './ui/taxonomy-view';
-import { runStage0 } from './stages/stage0-topic';
-import type { AllPluginData, CourseId } from './interfaces';
+import { TAXONOMY_VIEW_TYPE } from './constants';
+import { loadPrompt, PromptName } from './prompts';
 
-function generateCourseId(topic: string): string {
-  const slug = topic
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-|-$/g, '')
-    .slice(0, 40);
-  const ts = Date.now().toString(36);
-  return `${slug}-${ts}`;
-}
-
-export class DelvePlugin extends Plugin {
+export default class DelvePlugin extends Plugin {
   settings!: DelveSettings;
-  cache!: CacheService;
-  lock!: LockService;
-  llm!: OpenRouterService;
-  context!: ContextService;
-
-  // ─── Lifecycle ────────────────────────────────────────────────────────────
+  llmService!: OpenRouterService;
+  cacheService!: CacheService;
+  lockService!: LockService;
+  contextService!: ContextService;
 
   async onload(): Promise<void> {
     try {
       await this.loadSettings();
-
-      this.cache = new CacheService(
-        () => this.loadAll(),
-        d => this.saveAll(d),
-      );
-      this.lock = new LockService(this.app.vault);
-      this.llm = new OpenRouterService(
-        this.settings.openrouterApiKey,
-        this.settings.defaultModel,
-      );
-      this.context = new ContextService(this.app.vault);
-
-      this.registerView(
-        TAXONOMY_VIEW_TYPE,
-        (leaf: WorkspaceLeaf) => new TaxonomyView(leaf),
-      );
-
+      this.initServices();
+      this.registerViews();
+      this.registerCommands();
       this.addSettingTab(new DelveSettingsTab(this.app, this));
-
-      this.addCommand({
-        id: 'delve:start-course',
-        name: 'Start new course',
-        callback: () => void this.startCourse(),
-      });
-
-      this.addCommand({
-        id: 'delve:resume-course',
-        name: 'Resume interrupted course',
-        callback: () => void this.checkAndOfferResume(),
-      });
-
-      await this.checkAndOfferResume();
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      new Notice(`Delve failed to load: ${msg}`);
-      console.error('Delve load error:', err);
+      await this.checkResume();
+    } catch (e) {
+      await this.handleLoadError(e as Error);
     }
   }
 
-  onunload(): void {
-    this.app.workspace.detachLeavesOfType(TAXONOMY_VIEW_TYPE);
+  async onunload(): Promise<void> {
+    // Lock is intentionally preserved so the next load can offer resume
   }
 
-  // ─── Settings ─────────────────────────────────────────────────────────────
-
   async loadSettings(): Promise<void> {
-    const all = await this.loadAll();
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, all.settings) as DelveSettings;
-    this.settings.promptOverrides = {
-      ...(DEFAULT_SETTINGS.promptOverrides),
-      ...((all.settings.promptOverrides as DelveSettings['promptOverrides']) ?? {}),
-    };
+    const raw = await this.loadData();
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, raw?.settings ?? {});
   }
 
   async saveSettings(): Promise<void> {
-    const all = await this.loadAll();
-    all.settings = this.settings as unknown as Record<string, unknown>;
-    await this.saveAll(all);
-    this.llm?.updateCredentials(this.settings.openrouterApiKey, this.settings.defaultModel);
+    const raw = (await this.loadData()) ?? {};
+    raw.settings = this.settings;
+    await this.saveData(raw);
+    this.llmService.updateConfig(
+      this.settings.openRouterApiKey,
+      this.settings.defaultModel
+    );
   }
 
-  // ─── Internal data I/O ────────────────────────────────────────────────────
-
-  async loadAll(): Promise<AllPluginData> {
-    const raw = (await this.loadData()) as Partial<AllPluginData> | null;
-    return {
-      settings: raw?.settings ?? {},
-      courses: raw?.courses ?? {},
-      activeCourseId: raw?.activeCourseId,
-    };
+  async loadPrompt(name: PromptName): Promise<string> {
+    return loadPrompt(this, name);
   }
 
-  async saveAll(data: AllPluginData): Promise<void> {
-    await this.saveData(data);
+  private initServices(): void {
+    this.llmService = new OpenRouterService(
+      this.settings.openRouterApiKey,
+      this.settings.defaultModel
+    );
+    this.cacheService = new CacheService(this);
+    this.lockService = new LockService(this.app.vault);
+    this.contextService = new ContextService(this.app.vault);
   }
 
-  // ─── Course flow ──────────────────────────────────────────────────────────
-
-  private async startCourse(): Promise<void> {
-    const lockData = await this.lock.read();
-    if (lockData) {
-      new ResumeModal(this.app, lockData, async choice => {
-        if (choice === 'resume') {
-          await this.resumeCourse(lockData.courseId, lockData.stage);
-        } else if (choice === 'restart') {
-          await this.lock.release();
-          this.openTopicInput();
-        }
-      }).open();
-      return;
-    }
-    this.openTopicInput();
+  private registerViews(): void {
+    this.registerView(
+      TAXONOMY_VIEW_TYPE,
+      leaf => new TaxonomyView(leaf, this)
+    );
   }
 
-  private openTopicInput(): void {
-    if (!this.settings.openrouterApiKey) {
-      new Notice('Delve: Set your OpenRouter API key in settings first.');
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (this.app as any).setting?.open();
-      return;
-    }
-
-    new TopicInputModal(this.app, async topic => {
-      const courseId: CourseId = generateCourseId(topic);
-      await this.cache.setActiveCourseId(courseId);
-      this.llm.updateCredentials(
-        this.settings.openrouterApiKey,
-        this.settings.defaultModel,
-      );
-
-      try {
-        await runStage0(
-          this.app,
-          courseId,
-          topic,
-          this.llm,
-          this.cache,
-          this.lock,
-          this.context,
-          this.settings.promptOverrides.stage0,
-        );
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        new Notice(`Delve: Stage 0 failed — ${msg}`);
-        console.error('Delve Stage 0 error:', err);
-        await this.lock.release();
-      }
-    }).open();
+  private registerCommands(): void {
+    this.addCommand({
+      id: 'start-course',
+      name: 'Start new course',
+      callback: () => new TopicInputModal(this.app, this).open(),
+    });
   }
 
-  private async checkAndOfferResume(): Promise<void> {
-    const lockData = await this.lock.read();
-    if (!lockData) return;
+  private async checkResume(): Promise<void> {
+    try {
+      const lock = await this.lockService.read();
+      if (!lock) return;
 
-    new ResumeModal(this.app, lockData, async choice => {
+      const modal = new ResumeModal(this.app, lock);
+      const choice = await modal.waitForChoice();
+
       if (choice === 'resume') {
-        await this.resumeCourse(lockData.courseId, lockData.stage);
-      } else if (choice === 'restart') {
-        await this.lock.release();
+        if (lock.stage === 0) {
+          const cached = await this.cacheService.readStage(lock.courseId, 0);
+          if (cached?.taxonomy?.length) {
+            const leaf = this.app.workspace.getLeaf(false);
+            await leaf.setViewState({
+              type: TAXONOMY_VIEW_TYPE,
+              active: true,
+              state: {
+                courseId: lock.courseId,
+                seedTopic: cached.seedTopic,
+                taxonomy: cached.taxonomy,
+              },
+            });
+            this.app.workspace.revealLeaf(leaf);
+          }
+        }
+      } else {
+        await this.lockService.release();
       }
-    }).open();
+    } catch (e) {
+      console.warn('Delve: resume check failed', e);
+    }
   }
 
-  private async resumeCourse(courseId: CourseId, stage: number): Promise<void> {
-    if (stage === 0) {
-      const s0 = await this.cache.readStage(courseId, 0);
-      if (s0 && !s0.completedAt && s0.taxonomy.length > 0) {
-        // Taxonomy was generated but scope not yet confirmed — re-open the view
-        new Notice('Delve: Resuming scope selection…');
-        const { reopenTaxonomyView } = await import('./stages/stage0-topic');
-        await reopenTaxonomyView(this.app, courseId, s0.taxonomy, this.cache, this.lock);
-        return;
-      }
+  private async handleLoadError(error: Error): Promise<void> {
+    console.error('Delve: failed to load', error);
+    new Notice(`Delve failed to load: ${error.message}`);
+    try {
+      await this.app.vault.adapter.write(
+        'delve-load-error.md',
+        `# Delve failed to load\n\n${error.message}\n\n\`\`\`\n${error.stack}\n\`\`\``
+      );
+    } catch {
+      // ignore secondary failure
     }
-
-    // Stages 1–4: not yet implemented
-    new Notice(`Delve: Resume for Stage ${stage} coming in a future update.`);
-    await this.lock.release();
   }
 }

@@ -1,20 +1,15 @@
-import { App, PluginSettingTab, Setting } from 'obsidian';
-import type { DelvePlugin } from './plugin';
+import { App, Notice, PluginSettingTab, Setting } from 'obsidian';
+import type DelvePlugin from '../main';
 
 export interface DelveSettings {
-  openrouterApiKey: string;
+  openRouterApiKey: string;
   defaultModel: string;
-  promptOverrides: {
-    stage0?: string;
-    stage1?: string;
-    stage3?: string;
-    stage4?: string;
-  };
+  promptOverrides: Record<string, string>;
 }
 
 export const DEFAULT_SETTINGS: DelveSettings = {
-  openrouterApiKey: '',
-  defaultModel: 'anthropic/claude-3-5-haiku',
+  openRouterApiKey: '',
+  defaultModel: 'anthropic/claude-3-5-sonnet',
   promptOverrides: {},
 };
 
@@ -29,7 +24,7 @@ export class DelveSettingsTab extends PluginSettingTab {
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl('h2', { text: 'Delve Settings' });
+    containerEl.createEl('h2', { text: 'Delve' });
 
     new Setting(containerEl)
       .setName('OpenRouter API key')
@@ -37,59 +32,81 @@ export class DelveSettingsTab extends PluginSettingTab {
       .addText(text =>
         text
           .setPlaceholder('sk-or-...')
-          .setValue(this.plugin.settings.openrouterApiKey)
+          .setValue(this.plugin.settings.openRouterApiKey)
           .onChange(async value => {
-            this.plugin.settings.openrouterApiKey = value.trim();
+            this.plugin.settings.openRouterApiKey = value.trim();
             await this.plugin.saveSettings();
-          }),
+          })
       );
 
     new Setting(containerEl)
-      .setName('Default model')
-      .setDesc('OpenRouter model ID used for all stages unless overridden.')
+      .setName('Model')
+      .setDesc(
+        'OpenRouter model ID (e.g. anthropic/claude-3-5-sonnet, google/gemini-flash-1.5).'
+      )
       .addText(text =>
         text
-          .setPlaceholder('anthropic/claude-3-5-haiku')
           .setValue(this.plugin.settings.defaultModel)
           .onChange(async value => {
             this.plugin.settings.defaultModel = value.trim();
             await this.plugin.saveSettings();
-          }),
+          })
+      );
+
+    new Setting(containerEl)
+      .setName('Verify connection')
+      .setDesc('Check that your API key is valid and the model is reachable.')
+      .addButton(btn =>
+        btn
+          .setButtonText('Test connection')
+          .onClick(async () => {
+            if (!this.plugin.settings.openRouterApiKey) {
+              new Notice('Enter an API key first.');
+              return;
+            }
+            btn.setButtonText('Testing…').setDisabled(true);
+            try {
+              await this.plugin.llmService.listModels();
+              new Notice(`✓ Connected — model: ${this.plugin.settings.defaultModel}`);
+            } catch (e) {
+              new Notice(`✗ Connection failed: ${(e as Error).message}`);
+            } finally {
+              btn.setButtonText('Test connection').setDisabled(false);
+            }
+          })
       );
 
     containerEl.createEl('h3', { text: 'Prompt overrides' });
     containerEl.createEl('p', {
-      text: 'Leave blank to use built-in prompts. Use {{topic}}, {{sourceContext}}, etc. as template variables.',
+      text: 'Override any stage prompt. Leave blank to use the built-in default.',
       cls: 'setting-item-description',
     });
 
-    const stagePrompts: Array<{
-      key: keyof DelveSettings['promptOverrides'];
-      label: string;
-      placeholder: string;
-    }> = [
-      { key: 'stage0', label: 'Stage 0 — Taxonomy', placeholder: 'Override the taxonomy generation prompt…' },
-      { key: 'stage1', label: 'Stage 1 — Concepts', placeholder: 'Override the concept extraction prompt…' },
-      { key: 'stage3', label: 'Stage 3 — Curriculum', placeholder: 'Override the curriculum design prompt…' },
-      { key: 'stage4', label: 'Stage 4 — Lesson', placeholder: 'Override the lesson generation prompt…' },
+    const promptNames: Array<{ key: string; label: string }> = [
+      { key: 'stage0-taxonomy', label: 'Stage 0: Taxonomy' },
+      { key: 'stage1-concepts', label: 'Stage 1: Concepts' },
+      { key: 'stage3-curriculum', label: 'Stage 3: Curriculum' },
+      { key: 'stage4-lesson', label: 'Stage 4: Lesson' },
     ];
 
-    for (const { key, label, placeholder } of stagePrompts) {
-      new Setting(containerEl).setName(label).addTextArea(text => {
-        text
-          .setPlaceholder(placeholder)
-          .setValue(this.plugin.settings.promptOverrides[key] ?? '')
-          .onChange(async value => {
-            if (value.trim()) {
-              this.plugin.settings.promptOverrides[key] = value;
-            } else {
-              delete this.plugin.settings.promptOverrides[key];
-            }
-            await this.plugin.saveSettings();
-          });
-        text.inputEl.rows = 5;
-        text.inputEl.style.width = '100%';
-      });
+    for (const { key, label } of promptNames) {
+      new Setting(containerEl)
+        .setName(label)
+        .addTextArea(area => {
+          area
+            .setPlaceholder('Leave blank to use default…')
+            .setValue(this.plugin.settings.promptOverrides[key] ?? '')
+            .onChange(async value => {
+              if (value.trim()) {
+                this.plugin.settings.promptOverrides[key] = value;
+              } else {
+                delete this.plugin.settings.promptOverrides[key];
+              }
+              await this.plugin.saveSettings();
+            });
+          area.inputEl.rows = 6;
+          area.inputEl.style.width = '100%';
+        });
     }
   }
 }

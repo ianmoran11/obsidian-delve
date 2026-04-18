@@ -1,2 +1,1 @@
-import { DelvePlugin } from './src/plugin';
-export default DelvePlugin;
+export { default } from './src/plugin';
