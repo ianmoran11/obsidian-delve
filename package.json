@@ -1,0 +1,9 @@
+{
+  "name": "obsidian-delve",
+  "version": "1.0.0",
+  "description": "Delve — AI-assisted personalised learning for Obsidian",
+  "private": true,
+  "workspaces": [
+    "plugin"
+  ]
+}
