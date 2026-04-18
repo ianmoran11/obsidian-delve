@@ -1,18 +1,19 @@
-export function isMobileNarrow(): boolean {
-  return window.innerWidth < 480;
+export const BREAKPOINTS = {
+  COVER_SCREEN: 320,
+  PHONE: 480,
+  TABLET: 768,
+} as const;
+
+export function isMobileWidth(width = window.innerWidth): boolean {
+  return width < BREAKPOINTS.TABLET;
 }
 
-export function isMobileWide(): boolean {
-  return window.innerWidth < 768;
+export function isCoverScreen(width = window.innerWidth): boolean {
+  return width < BREAKPOINTS.PHONE;
 }
 
-export function applyResponsiveClass(el: HTMLElement): void {
-  el.removeClass('delve-narrow', 'delve-mobile', 'delve-desktop');
-  if (isMobileNarrow()) {
-    el.addClass('delve-narrow');
-  } else if (isMobileWide()) {
-    el.addClass('delve-mobile');
-  } else {
-    el.addClass('delve-desktop');
-  }
+export function getLayoutClass(width = window.innerWidth): string {
+  if (width < BREAKPOINTS.PHONE) return 'delve-layout--cover';
+  if (width < BREAKPOINTS.TABLET) return 'delve-layout--phone';
+  return 'delve-layout--desktop';
 }

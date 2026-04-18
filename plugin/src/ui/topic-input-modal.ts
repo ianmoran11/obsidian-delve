@@ -1,56 +1,71 @@
-import { App, Modal, Setting } from 'obsidian';
+import { App, Modal, Notice, Setting } from 'obsidian';
+import type DelvePlugin from '../../main';
+import { runStage0 } from '../stages/stage0-topic';
 
 export class TopicInputModal extends Modal {
   private topic = '';
-  private readonly onSubmit: (topic: string) => void;
+  private readonly courseId: string;
 
-  constructor(app: App, onSubmit: (topic: string) => void) {
+  constructor(app: App, private plugin: DelvePlugin) {
     super(app);
-    this.onSubmit = onSubmit;
+    this.courseId = generateCourseId();
   }
 
   onOpen(): void {
     const { contentEl } = this;
-    contentEl.addClass('delve-topic-modal');
+    contentEl.addClass('delve-topic-input');
 
-    contentEl.createEl('h2', { text: 'Start a new course' });
+    contentEl.createEl('h2', { text: 'Start a New Course' });
     contentEl.createEl('p', {
-      text: 'Enter a broad topic. Delve will generate a taxonomy so you can choose exactly what to cover.',
-      cls: 'setting-item-description',
+      text: 'Enter a broad topic and Delve will build a personalised course for you.',
+      cls: 'delve-subtitle',
     });
 
-    new Setting(contentEl).setName('Topic').addText(text => {
-      text
-        .setPlaceholder('e.g. machine learning, Kubernetes, linear algebra')
-        .onChange(v => {
-          this.topic = v;
+    new Setting(contentEl)
+      .setName('Topic')
+      .setDesc('e.g. “Machine Learning”, “Linear Algebra”, “Kubernetes”')
+      .addText(text => {
+        text
+          .setPlaceholder('Enter your topic…')
+          .onChange(v => {
+            this.topic = v.trim();
+          });
+        text.inputEl.addClass('delve-topic-input__field');
+        text.inputEl.addEventListener('keydown', (e: KeyboardEvent) => {
+          if (e.key === 'Enter') void this.submit();
         });
-      text.inputEl.style.width = '100%';
-      text.inputEl.setAttribute('autocorrect', 'off');
-      text.inputEl.setAttribute('autocapitalize', 'off');
-      text.inputEl.addEventListener('keydown', (e: KeyboardEvent) => {
-        if (e.key === 'Enter') this.submit();
+        setTimeout(() => text.inputEl.focus(), 50);
       });
-      // Focus after the modal animation settles
-      setTimeout(() => text.inputEl.focus(), 60);
-    });
 
-    new Setting(contentEl).addButton(btn =>
-      btn
-        .setButtonText('Generate taxonomy')
-        .setCta()
-        .onClick(() => this.submit()),
-    );
+    const btnRow = contentEl.createDiv('delve-topic-input__actions');
+    const startBtn = btnRow.createEl('button', {
+      text: 'Build Course',
+      cls: 'mod-cta delve-btn-primary',
+    });
+    startBtn.addEventListener('click', () => void this.submit());
+  }
+
+  private async submit(): Promise<void> {
+    if (!this.topic) {
+      new Notice('Please enter a topic.');
+      return;
+    }
+    if (!this.plugin.settings.openRouterApiKey) {
+      new Notice('Add your OpenRouter API key in Delve settings first.');
+      return;
+    }
+    this.close();
+    await runStage0(this.plugin, this.topic, this.courseId);
   }
 
   onClose(): void {
     this.contentEl.empty();
   }
+}
 
-  private submit(): void {
-    const t = this.topic.trim();
-    if (!t) return;
-    this.close();
-    this.onSubmit(t);
-  }
+function generateCourseId(): string {
+  return (
+    Math.random().toString(36).slice(2, 10) +
+    Date.now().toString(36)
+  );
 }

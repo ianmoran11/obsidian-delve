@@ -1,223 +1,174 @@
 import { ItemView, WorkspaceLeaf } from 'obsidian';
+import type DelvePlugin from '../../main';
 import type { TaxonomyNode } from '../interfaces';
-import { applyResponsiveClass } from './responsive';
-
-export const TAXONOMY_VIEW_TYPE = 'delve-taxonomy';
+import { TAXONOMY_VIEW_TYPE } from '../constants';
+import { confirmScope } from '../stages/stage0-topic';
 
 export interface TaxonomyViewState {
   courseId: string;
+  seedTopic: string;
   taxonomy: TaxonomyNode[];
-  onConfirm: (selectedIds: string[], scopeSummary: string) => Promise<void>;
 }
 
 export class TaxonomyView extends ItemView {
-  private state: TaxonomyViewState | null = null;
+  private state: TaxonomyViewState = {
+    courseId: '',
+    seedTopic: '',
+    taxonomy: [],
+  };
   private selected = new Set<string>();
-  private expanded = new Set<string>();
+
+  constructor(leaf: WorkspaceLeaf, private plugin: DelvePlugin) {
+    super(leaf);
+  }
 
   getViewType(): string {
     return TAXONOMY_VIEW_TYPE;
   }
 
   getDisplayText(): string {
-    return 'Delve: Select scope';
+    return this.state.seedTopic ? `Scope: ${this.state.seedTopic}` : 'Delve: Scope';
   }
 
   getIcon(): string {
-    return 'book-open';
+    return 'map';
   }
 
-  async setState(
-    state: TaxonomyViewState,
-    result: { history: boolean },
-  ): Promise<void> {
+  async setState(state: TaxonomyViewState, _result: Record<string, unknown>): Promise<void> {
     this.state = state;
-    this.selected.clear();
-    this.expanded.clear();
-    // Expand top-level nodes by default
-    for (const node of state.taxonomy) {
-      this.expanded.add(node.id);
-    }
-    this.render();
-    return super.setState(state, result);
+    await this.render();
   }
 
-  getState(): TaxonomyViewState | null {
+  getState(): TaxonomyViewState {
     return this.state;
   }
 
   async onOpen(): Promise<void> {
-    this.render();
+    if (this.state.taxonomy.length > 0) await this.render();
   }
 
-  async onClose(): Promise<void> {}
+  async onClose(): Promise<void> {
+    this.contentEl.empty();
+  }
 
-  // ─── Rendering ───────────────────────────────────────────────────────────
-
-  private render(): void {
+  private async render(): Promise<void> {
     const { contentEl } = this;
     contentEl.empty();
-    contentEl.addClass('delve-taxonomy-view');
-    applyResponsiveClass(contentEl);
+    contentEl.addClass('delve-taxonomy');
 
-    if (!this.state) {
-      contentEl.createEl('p', { text: 'Loading\u2026' });
-      return;
-    }
-
-    const { taxonomy, courseId } = this.state;
-
-    // Header
-    const header = contentEl.createDiv('delve-taxonomy-header');
-    header.createEl('h2', { text: courseId.split('-').slice(0, -1).join(' ') || courseId });
+    const header = contentEl.createDiv('delve-taxonomy__header');
+    header.createEl('h2', { text: this.state.seedTopic });
     header.createEl('p', {
-      text: 'Select the topics you want to cover. Selecting a parent includes all its children.',
-      cls: 'delve-taxonomy-description',
+      text: 'Select the areas you want to cover. Tap a parent to include all its subtopics.',
+      cls: 'delve-taxonomy__hint',
     });
 
-    // Tree
-    const treeEl = contentEl.createDiv('delve-taxonomy-tree');
-    for (const node of taxonomy) {
-      this.renderNode(treeEl, node, 0);
+    const tree = contentEl.createDiv('delve-taxonomy__tree');
+    for (const node of this.state.taxonomy) {
+      this.renderNode(tree, node, 0);
     }
 
-    // Footer
-    const footer = contentEl.createDiv('delve-taxonomy-footer');
-
+    const footer = contentEl.createDiv('delve-taxonomy__footer');
     const confirmBtn = footer.createEl('button', {
-      text: `Confirm scope (${this.selected.size} selected)`,
-      cls: 'delve-confirm-btn mod-cta',
-    });
-    confirmBtn.disabled = this.selected.size === 0;
+      text: 'Select topics to continue',
+      cls: 'mod-cta delve-btn-primary delve-taxonomy__confirm',
+    }) as HTMLButtonElement;
+    confirmBtn.disabled = true;
     confirmBtn.addEventListener('click', () => void this.handleConfirm());
-
-    const selectAllBtn = footer.createEl('button', {
-      text: 'Select all',
-      cls: 'delve-select-all-btn',
-    });
-    selectAllBtn.addEventListener('click', () => {
-      if (this.state) this.selectAll(this.state.taxonomy);
-      this.render();
-    });
-
-    const clearBtn = footer.createEl('button', {
-      text: 'Clear',
-      cls: 'delve-clear-btn',
-    });
-    clearBtn.addEventListener('click', () => {
-      this.selected.clear();
-      this.render();
-    });
   }
 
-  private renderNode(container: HTMLElement, node: TaxonomyNode, depth: number): void {
-    const nodeEl = container.createDiv('delve-taxonomy-node');
-    nodeEl.style.paddingLeft = `${depth * 20}px`;
-
-    const rowEl = nodeEl.createDiv('delve-taxonomy-row');
-    const hasChildren = Boolean(node.children?.length);
-
-    // Expand / collapse toggle
-    const toggleEl = rowEl.createSpan('delve-taxonomy-toggle');
-    if (hasChildren) {
-      toggleEl.setText(this.expanded.has(node.id) ? '\u25be' : '\u25b8');
-      toggleEl.addEventListener('click', e => {
-        e.stopPropagation();
-        if (this.expanded.has(node.id)) {
-          this.expanded.delete(node.id);
-        } else {
-          this.expanded.add(node.id);
-        }
-        this.render();
-      });
-    } else {
-      toggleEl.setText('\u00b7');
-    }
-
-    // Checkbox
-    const check = rowEl.createEl('input') as HTMLInputElement;
-    check.type = 'checkbox';
-    check.className = 'delve-taxonomy-check';
-    check.checked = this.selected.has(node.id);
-    check.addEventListener('change', () => {
-      if (check.checked) {
-        this.selectNode(node);
-      } else {
-        this.deselectNode(node);
-      }
-      this.render();
+  private renderNode(
+    parent: HTMLElement,
+    node: TaxonomyNode,
+    depth: number
+  ): void {
+    const item = parent.createDiv({
+      cls: `delve-taxonomy__item delve-taxonomy__item--depth-${depth}`,
     });
+    const row = item.createDiv('delve-taxonomy__row');
 
-    // Label (also acts as click target)
-    const labelEl = rowEl.createSpan('delve-taxonomy-label');
-    labelEl.setText(node.title);
-    labelEl.addEventListener('click', () => {
-      if (this.selected.has(node.id)) {
-        this.deselectNode(node);
-      } else {
-        this.selectNode(node);
-      }
-      this.render();
-    });
+    const cbId = `delve-node-${node.id}`;
+    const checkbox = row.createEl('input') as HTMLInputElement;
+    checkbox.type = 'checkbox';
+    checkbox.className = 'delve-taxonomy__checkbox';
+    checkbox.id = cbId;
+    checkbox.checked = this.selected.has(node.id);
 
-    // Description (hidden on narrow screens via CSS)
+    const label = row.createEl('label', { cls: 'delve-taxonomy__label' });
+    label.htmlFor = cbId;
+    label.createEl('span', { text: node.title, cls: 'delve-taxonomy__title' });
     if (node.description) {
-      nodeEl.createDiv({ text: node.description, cls: 'delve-taxonomy-desc' });
+      label.createEl('span', {
+        text: node.description,
+        cls: 'delve-taxonomy__desc',
+      });
     }
 
-    // Children
-    if (hasChildren && this.expanded.has(node.id)) {
-      const childrenEl = nodeEl.createDiv('delve-taxonomy-children');
-      for (const child of node.children!) {
-        this.renderNode(childrenEl, child, depth + 1);
+    checkbox.addEventListener('change', () => {
+      this.toggleNode(node, checkbox.checked);
+      this.syncCheckboxes();
+      this.syncConfirmButton();
+    });
+
+    if (node.children?.length) {
+      const children = item.createDiv('delve-taxonomy__children');
+      for (const child of node.children) {
+        this.renderNode(children, child, depth + 1);
       }
     }
   }
 
-  // ─── Selection helpers ──────────────────────────────────────────────────
-
-  private selectNode(node: TaxonomyNode): void {
-    this.selected.add(node.id);
-    if (node.children) {
-      for (const child of node.children) this.selectNode(child);
-    }
-  }
-
-  private deselectNode(node: TaxonomyNode): void {
-    this.selected.delete(node.id);
-    if (node.children) {
-      for (const child of node.children) this.deselectNode(child);
-    }
-  }
-
-  private selectAll(nodes: TaxonomyNode[]): void {
-    for (const node of nodes) {
+  private toggleNode(node: TaxonomyNode, checked: boolean): void {
+    if (checked) {
       this.selected.add(node.id);
-      if (node.children) this.selectAll(node.children);
+    } else {
+      this.selected.delete(node.id);
+    }
+    for (const child of node.children ?? []) {
+      this.toggleNode(child, checked);
     }
   }
 
-  private buildScopeSummary(): string {
-    if (!this.state) return '';
-    const titles: string[] = [];
-    this.collectTitles(this.state.taxonomy, titles);
-    return titles.join(', ');
-  }
-
-  private collectTitles(nodes: TaxonomyNode[], out: string[]): void {
-    for (const node of nodes) {
-      if (this.selected.has(node.id)) out.push(node.title);
-      if (node.children) this.collectTitles(node.children, out);
+  private syncCheckboxes(): void {
+    for (const node of flattenNodes(this.state.taxonomy)) {
+      const cb = this.contentEl.querySelector(
+        `#delve-node-${node.id}`
+      ) as HTMLInputElement | null;
+      if (cb) cb.checked = this.selected.has(node.id);
     }
   }
 
-  // ─── Confirm ─────────────────────────────────────────────────────────────
+  private syncConfirmButton(): void {
+    const btn = this.contentEl.querySelector(
+      '.delve-taxonomy__confirm'
+    ) as HTMLButtonElement | null;
+    if (!btn) return;
+    const count = this.selected.size;
+    btn.disabled = count === 0;
+    btn.textContent =
+      count > 0 ? `Confirm Scope (${count} selected)` : 'Select topics to continue';
+  }
 
   private async handleConfirm(): Promise<void> {
-    if (!this.state || this.selected.size === 0) return;
-    const selectedIds = Array.from(this.selected);
-    const scopeSummary = this.buildScopeSummary();
-    await this.state.onConfirm(selectedIds, scopeSummary);
-    await this.leaf.detach();
+    const scope = Array.from(this.selected);
+    await confirmScope(
+      this.plugin,
+      this.state.courseId,
+      this.state.seedTopic,
+      this.state.taxonomy,
+      scope
+    );
   }
+}
+
+function flattenNodes(nodes: TaxonomyNode[]): TaxonomyNode[] {
+  const result: TaxonomyNode[] = [];
+  function walk(arr: TaxonomyNode[]): void {
+    for (const n of arr) {
+      result.push(n);
+      if (n.children) walk(n.children);
+    }
+  }
+  walk(nodes);
+  return result;
 }
