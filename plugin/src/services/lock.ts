@@ -1,12 +1,6 @@
 import type { Vault } from 'obsidian';
 import { LOCK_FILE } from '../constants';
-import type { CourseId, StageId } from '../interfaces';
-
-export interface LockData {
-  courseId: CourseId;
-  stage: StageId;
-  acquiredAt: string;
-}
+import type { CourseId, LockData, StageId } from '../interfaces';
 
 export class LockService {
   constructor(private vault: Vault) {}
@@ -15,7 +9,7 @@ export class LockService {
     const lock: LockData = {
       courseId,
       stage,
-      acquiredAt: new Date().toISOString(),
+      timestamp: new Date().toISOString(),
     };
     await this.vault.adapter.write(LOCK_FILE, JSON.stringify(lock));
   }
@@ -24,14 +18,16 @@ export class LockService {
     try {
       await this.vault.adapter.remove(LOCK_FILE);
     } catch {
-      // Lock already gone — nothing to do
+      // Already gone — that's fine
     }
   }
 
   async read(): Promise<LockData | null> {
     try {
-      const text = await this.vault.adapter.read(LOCK_FILE);
-      return JSON.parse(text) as LockData;
+      const exists = await this.vault.adapter.exists(LOCK_FILE);
+      if (!exists) return null;
+      const raw = await this.vault.adapter.read(LOCK_FILE);
+      return JSON.parse(raw) as LockData;
     } catch {
       return null;
     }

@@ -1,41 +1,45 @@
 import type { Vault } from 'obsidian';
 import { VAULT_PATHS } from '../constants';
 
-export type SourceMode = 'knowledge-only' | 'augmented' | 'grounded';
+export type SourceMode = 'grounded' | 'augmented' | 'knowledge-only';
 
-export interface SourceContext {
+export interface ContextPayload {
   mode: SourceMode;
-  /** Concatenated Markdown source text (empty in knowledge-only mode) */
-  text: string;
+  content: string;
   fileCount: number;
 }
-
-const GROUNDED_THRESHOLD = 5_000;
 
 export class ContextService {
   constructor(private vault: Vault) {}
 
-  async buildContext(): Promise<SourceContext> {
+  async build(): Promise<ContextPayload> {
+    const folder = this.vault.getAbstractFileByPath(VAULT_PATHS.MARKDOWN_SOURCES);
+    if (!folder) {
+      return { mode: 'knowledge-only', content: '', fileCount: 0 };
+    }
+
     const files = this.vault
       .getFiles()
       .filter(
         f =>
           f.path.startsWith(VAULT_PATHS.MARKDOWN_SOURCES + '/') &&
-          f.extension === 'md',
+          f.extension === 'md'
       );
 
     if (files.length === 0) {
-      return { mode: 'knowledge-only', text: '', fileCount: 0 };
+      return { mode: 'knowledge-only', content: '', fileCount: 0 };
     }
 
-    const chunks: string[] = [];
+    const parts: string[] = [];
     for (const file of files) {
-      const content = await this.vault.cachedRead(file);
-      chunks.push(`=== ${file.basename} ===\n${content}`);
+      const text = await this.vault.read(file);
+      parts.push(`--- FILE: ${file.name} ---\n${text}`);
     }
 
-    const text = chunks.join('\n\n');
-    const mode: SourceMode = text.length >= GROUNDED_THRESHOLD ? 'grounded' : 'augmented';
-    return { mode, text, fileCount: files.length };
+    return {
+      mode: 'grounded',
+      content: parts.join('\n\n'),
+      fileCount: files.length,
+    };
   }
 }

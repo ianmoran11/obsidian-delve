@@ -1,12 +1,14 @@
+import type DelvePlugin from '../../main';
 import type {
-  AllPluginData,
   CourseId,
+  CourseMeta,
+  PluginData,
+  StageCache,
   Stage0Cache,
   Stage1Cache,
   Stage2Cache,
   Stage3Cache,
   Stage4Cache,
-  StageCache,
 } from '../interfaces';
 
 type StageDataMap = {
@@ -18,50 +20,52 @@ type StageDataMap = {
 };
 
 export class CacheService {
-  constructor(
-    private loadAll: () => Promise<AllPluginData>,
-    private saveAll: (data: AllPluginData) => Promise<void>,
-  ) {}
+  constructor(private plugin: DelvePlugin) {}
 
-  async readCourse(courseId: CourseId): Promise<StageCache | null> {
-    const data = await this.loadAll();
-    return data.courses[courseId] ?? null;
+  async readAll(): Promise<PluginData> {
+    const raw = (await this.plugin.loadData()) as PluginData | null;
+    return raw ?? { courses: {}, meta: {} };
+  }
+
+  async readCourse(courseId: CourseId): Promise<StageCache> {
+    const data = await this.readAll();
+    return data.courses[courseId] ?? {};
   }
 
   async readStage<S extends keyof StageDataMap>(
     courseId: CourseId,
-    stage: S,
-  ): Promise<StageDataMap[S] | null> {
-    const data = await this.loadAll();
-    return (data.courses[courseId]?.[stage] as StageDataMap[S]) ?? null;
+    stage: S
+  ): Promise<StageDataMap[S] | undefined> {
+    const cache = await this.readCourse(courseId);
+    return cache[stage] as StageDataMap[S] | undefined;
   }
 
   async writeStage<S extends keyof StageDataMap>(
     courseId: CourseId,
     stage: S,
-    value: StageDataMap[S],
+    payload: StageDataMap[S]
   ): Promise<void> {
-    const data = await this.loadAll();
+    const data = await this.readAll();
     if (!data.courses[courseId]) data.courses[courseId] = {};
-    (data.courses[courseId] as StageCache)[stage] = value as StageCache[S];
-    await this.saveAll(data);
+    (data.courses[courseId] as StageCache)[stage] = payload as never;
+    await this.plugin.saveData(data);
   }
 
-  async getActiveCourseId(): Promise<CourseId | null> {
-    const data = await this.loadAll();
-    return data.activeCourseId ?? null;
+  async writeMeta(meta: CourseMeta): Promise<void> {
+    const data = await this.readAll();
+    data.meta[meta.courseId] = meta;
+    await this.plugin.saveData(data);
   }
 
-  async setActiveCourseId(courseId: CourseId): Promise<void> {
-    const data = await this.loadAll();
-    data.activeCourseId = courseId;
-    await this.saveAll(data);
+  async listCourses(): Promise<CourseMeta[]> {
+    const data = await this.readAll();
+    return Object.values(data.meta);
   }
 
-  async deleteCourse(courseId: CourseId): Promise<void> {
-    const data = await this.loadAll();
+  async clearCourse(courseId: CourseId): Promise<void> {
+    const data = await this.readAll();
     delete data.courses[courseId];
-    if (data.activeCourseId === courseId) delete data.activeCourseId;
-    await this.saveAll(data);
+    delete data.meta[courseId];
+    await this.plugin.saveData(data);
   }
 }

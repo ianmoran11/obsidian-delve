@@ -1,110 +1,111 @@
-import { requestUrl } from 'obsidian';
-import { OPENROUTER_BASE_URL } from '../constants';
+import { requestUrl, RequestUrlParam } from 'obsidian';
 
 export interface LlmService {
-  callText(prompt: string, variables: Record<string, string>): Promise<string>;
   callJson<T>(prompt: string, variables: Record<string, string>): Promise<T>;
+  callText(prompt: string, variables: Record<string, string>): Promise<string>;
   listModels(): Promise<string[]>;
-  updateCredentials(apiKey: string, model: string): void;
-}
-
-interface ChatMessage {
-  role: 'user' | 'assistant' | 'system';
-  content: string;
-}
-
-interface ChatResponse {
-  choices: Array<{ message: { content: string } }>;
 }
 
 export class OpenRouterService implements LlmService {
-  private apiKey: string;
-  private model: string;
   private modelCache: { models: string[]; fetchedAt: number } | null = null;
-  private static readonly MODEL_TTL = 5 * 60 * 1000;
+  private readonly MODEL_CACHE_TTL_MS = 5 * 60 * 1000;
 
-  constructor(apiKey: string, model: string) {
+  constructor(private apiKey: string, private model: string) {}
+
+  updateConfig(apiKey: string, model: string): void {
     this.apiKey = apiKey;
     this.model = model;
-  }
-
-  updateCredentials(apiKey: string, model: string): void {
-    this.apiKey = apiKey;
-    this.model = model;
-  }
-
-  async callText(prompt: string, variables: Record<string, string>): Promise<string> {
-    return this.chat(this.render(prompt, variables), 'text');
   }
 
   async callJson<T>(prompt: string, variables: Record<string, string>): Promise<T> {
-    const text = await this.chat(this.render(prompt, variables), 'json');
+    const rendered = renderPrompt(prompt, variables);
+    const text = await this.callWithRetry(rendered, 'json_object');
     return JSON.parse(text) as T;
+  }
+
+  async callText(prompt: string, variables: Record<string, string>): Promise<string> {
+    const rendered = renderPrompt(prompt, variables);
+    return this.callWithRetry(rendered, 'text');
   }
 
   async listModels(): Promise<string[]> {
     const now = Date.now();
-    if (this.modelCache && now - this.modelCache.fetchedAt < OpenRouterService.MODEL_TTL) {
+    if (this.modelCache && now - this.modelCache.fetchedAt < this.MODEL_CACHE_TTL_MS) {
       return this.modelCache.models;
     }
     const resp = await requestUrl({
-      url: `${OPENROUTER_BASE_URL}/models`,
+      url: 'https://openrouter.ai/api/v1/models',
       method: 'GET',
       headers: { Authorization: `Bearer ${this.apiKey}` },
     });
     const data = resp.json as { data: Array<{ id: string }> };
-    const models = data.data.map(m => m.id).sort();
+    const models = data.data.map((m: { id: string }) => m.id);
     this.modelCache = { models, fetchedAt: now };
     return models;
   }
 
-  // ─── Private ───────────────────────────────────────────────────────────────
-
-  private render(template: string, vars: Record<string, string>): string {
-    return template.replace(/\{\{(\w+)\}\}/g, (_, k) => vars[k] ?? `{{${k}}}`);
-  }
-
-  private async chat(content: string, format: 'text' | 'json'): Promise<string> {
-    const messages: ChatMessage[] = [{ role: 'user', content }];
-    const body: Record<string, unknown> = { model: this.model, messages };
-    if (format === 'json') body.response_format = { type: 'json_object' };
-
+  private async callWithRetry(
+    content: string,
+    responseFormat: 'json_object' | 'text'
+  ): Promise<string> {
     const delays = [1000, 2000, 4000];
-    let lastErr: Error | null = null;
+    let lastError: Error = new Error('Unknown LLM error');
 
     for (let attempt = 0; attempt <= delays.length; attempt++) {
       try {
-        const resp = await requestUrl({
-          url: `${OPENROUTER_BASE_URL}/chat/completions`,
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${this.apiKey}`,
-            'Content-Type': 'application/json',
-            'HTTP-Referer': 'obsidian://delve',
-            'X-Title': 'Delve',
-          },
-          body: JSON.stringify(body),
-          throw: false,
-        });
-
-        if (resp.status >= 400) {
-          throw new Error(`OpenRouter HTTP ${resp.status}: ${resp.text.slice(0, 200)}`);
-        }
-
-        const data = resp.json as ChatResponse;
-        return data.choices[0].message.content;
-      } catch (err) {
-        lastErr = err as Error;
+        return await this.callOnce(content, responseFormat);
+      } catch (e) {
+        lastError = e as Error;
         if (attempt < delays.length) {
-          await delay(delays[attempt]);
+          await sleep(delays[attempt]);
         }
       }
     }
+    throw lastError;
+  }
 
-    throw lastErr ?? new Error('LLM call failed after retries');
+  private async callOnce(
+    content: string,
+    responseFormat: 'json_object' | 'text'
+  ): Promise<string> {
+    const body: Record<string, unknown> = {
+      model: this.model,
+      messages: [{ role: 'user', content }],
+    };
+    if (responseFormat === 'json_object') {
+      body.response_format = { type: 'json_object' };
+    }
+
+    const params: RequestUrlParam = {
+      url: 'https://openrouter.ai/api/v1/chat/completions',
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${this.apiKey}`,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': 'obsidian://delve',
+        'X-Title': 'Delve',
+      },
+      body: JSON.stringify(body),
+      throw: false,
+    };
+
+    const resp = await requestUrl(params);
+    if (resp.status !== 200) {
+      throw new Error(`OpenRouter ${resp.status}: ${resp.text.slice(0, 200)}`);
+    }
+    const json = resp.json as { choices: Array<{ message: { content: string } }> };
+    const result = json.choices?.[0]?.message?.content;
+    if (result === undefined) {
+      throw new Error('OpenRouter returned empty choices');
+    }
+    return result;
   }
 }
 
-function delay(ms: number): Promise<void> {
-  return new Promise(r => setTimeout(r, ms));
+function renderPrompt(template: string, vars: Record<string, string>): string {
+  return template.replace(/\{\{(\w+)\}\}/g, (_, k: string) => vars[k] ?? `{{${k}}}`);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }

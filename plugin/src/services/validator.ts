@@ -1,60 +1,56 @@
 import { z } from 'zod';
+import type { LlmService } from './openrouter';
 import type { TaxonomyNode } from '../interfaces';
 
-export class ValidationError extends Error {
-  constructor(
-    message: string,
-    public readonly issues: z.ZodIssue[],
-  ) {
-    super(message);
-    this.name = 'ValidationError';
-  }
-}
-
-export function validate<T>(schema: z.ZodSchema<T>, data: unknown): T {
-  const result = schema.safeParse(data);
-  if (!result.success) {
-    throw new ValidationError(
-      `Validation failed: ${result.error.issues.map(i => i.message).join('; ')}`,
-      result.error.issues,
-    );
-  }
-  return result.data;
-}
-
-export async function validateWithRepair<T>(
-  schema: z.ZodSchema<T>,
+export async function validateAndRepair<T>(
   data: unknown,
-  repair: () => Promise<unknown>,
+  schema: z.ZodType<T>,
+  llm: LlmService,
+  repairHint: string
 ): Promise<T> {
   const first = schema.safeParse(data);
   if (first.success) return first.data;
-  const repaired = await repair();
-  return validate(schema, repaired);
-}
 
-// ─── Zod schemas ──────────────────────────────────────────────────────────
+  const issues = first.error.issues
+    .map(i => `${i.path.join('.')}: ${i.message}`)
+    .join('; ');
+
+  const repairPrompt = [
+    'The following JSON failed schema validation:',
+    '',
+    JSON.stringify(data, null, 2),
+    '',
+    `Validation errors: ${issues}`,
+    '',
+    repairHint,
+    '',
+    'Return ONLY the corrected JSON, no explanation.',
+  ].join('\n');
+
+  const repaired = await llm.callJson<T>(repairPrompt, {});
+  return schema.parse(repaired);
+}
 
 export const TaxonomyNodeSchema: z.ZodType<TaxonomyNode> = z.lazy(() =>
   z.object({
     id: z.string().min(1),
     title: z.string().min(1),
-    description: z.string().min(1),
+    description: z.string(),
     children: z.array(TaxonomyNodeSchema).optional(),
-  }),
+  })
 );
 
-export const TaxonomyResponseSchema = z.object({
+export const Stage0ResponseSchema = z.object({
   taxonomy: z.array(TaxonomyNodeSchema).min(1),
 });
 
 export const ConceptSchema = z.object({
   id: z.string().min(1),
   title: z.string().min(1),
-  description: z.string().min(1),
+  description: z.string(),
   sourceRefs: z.array(z.string()).optional(),
 });
 
-export const ConceptListSchema = z.object({
+export const Stage1ResponseSchema = z.object({
   concepts: z.array(ConceptSchema).min(1),
 });
