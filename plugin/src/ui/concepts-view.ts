@@ -4,6 +4,7 @@ import type { Concept } from '../interfaces';
 import type { SourceMode } from '../services/context';
 import { CONCEPTS_VIEW_TYPE } from '../constants';
 import { runStage1 } from '../stages/stage1-concepts';
+import { runStage2 } from '../stages/stage2-diagnostic';
 
 export interface ConceptsViewState {
   courseId: string;
@@ -55,7 +56,6 @@ export class ConceptsView extends ItemView {
     contentEl.empty();
     contentEl.addClass('delve-concepts');
 
-    // Header
     const header = contentEl.createDiv('delve-concepts__header');
     header.createEl('h2', { text: `Concepts: ${this.state.seedTopic}` });
 
@@ -74,13 +74,11 @@ export class ConceptsView extends ItemView {
       cls: 'delve-concepts__count',
     });
 
-    // Concept list
     const list = contentEl.createDiv('delve-concepts__list');
     this.state.concepts.forEach((concept, i) => {
       this.renderConcept(list, concept, i + 1);
     });
 
-    // Footer
     const footer = contentEl.createDiv('delve-concepts__footer');
 
     if (this.regenerating) {
@@ -145,6 +143,10 @@ export class ConceptsView extends ItemView {
   }
 
   private async handleProceed(): Promise<void> {
-    new Notice('Stage 2 (Self-Assessment) is coming in the next release.');
+    try {
+      await runStage2(this.plugin, this.state.courseId);
+    } catch (e) {
+      new Notice(`Could not start self-assessment: ${(e as Error).message}`);
+    }
   }
 }

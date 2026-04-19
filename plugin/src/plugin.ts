@@ -7,8 +7,13 @@ import { ContextService } from './services/context';
 import { TopicInputModal } from './ui/topic-input-modal';
 import { TaxonomyView } from './ui/taxonomy-view';
 import { ConceptsView } from './ui/concepts-view';
+import { DiagnosticView } from './ui/diagnostic-view';
 import { ResumeModal } from './ui/resume-modal';
-import { TAXONOMY_VIEW_TYPE, CONCEPTS_VIEW_TYPE } from './constants';
+import {
+  TAXONOMY_VIEW_TYPE,
+  CONCEPTS_VIEW_TYPE,
+  DIAGNOSTIC_VIEW_TYPE,
+} from './constants';
 import { loadPrompt, PromptName } from './prompts';
 
 export default class DelvePlugin extends Plugin {
@@ -65,6 +70,7 @@ export default class DelvePlugin extends Plugin {
   private registerViews(): void {
     this.registerView(TAXONOMY_VIEW_TYPE, leaf => new TaxonomyView(leaf, this));
     this.registerView(CONCEPTS_VIEW_TYPE, leaf => new ConceptsView(leaf, this));
+    this.registerView(DIAGNOSTIC_VIEW_TYPE, leaf => new DiagnosticView(leaf, this));
   }
 
   private registerCommands(): void {
@@ -127,6 +133,22 @@ export default class DelvePlugin extends Plugin {
         });
         this.app.workspace.revealLeaf(leaf);
         await this.lockService.release();
+      }
+    } else if (stage === 2) {
+      const stage1 = await this.cacheService.readStage(courseId, 1);
+      const stage0 = await this.cacheService.readStage(courseId, 0);
+      if (stage1?.concepts?.length && stage0) {
+        const leaf = this.app.workspace.getLeaf(false);
+        await leaf.setViewState({
+          type: DIAGNOSTIC_VIEW_TYPE,
+          active: true,
+          state: {
+            courseId,
+            seedTopic: stage0.seedTopic,
+            concepts: stage1.concepts,
+          },
+        });
+        this.app.workspace.revealLeaf(leaf);
       }
     }
   }

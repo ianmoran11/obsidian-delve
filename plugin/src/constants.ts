@@ -13,5 +13,6 @@ export const LOCK_FILE = '.delve.lock';
 
 export const TAXONOMY_VIEW_TYPE = 'delve-taxonomy-view';
 export const CONCEPTS_VIEW_TYPE = 'delve-concepts-view';
+export const DIAGNOSTIC_VIEW_TYPE = 'delve-diagnostic-view';
 export const PROGRESS_VIEW_TYPE = 'delve-progress-view';
 export const SYLLABUS_VIEW_TYPE = 'delve-syllabus-editor-view';

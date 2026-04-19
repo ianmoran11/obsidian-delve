@@ -110,3 +110,66 @@
 }
 .delve-concepts__proceed { margin-left: auto; }
 .delve-concepts__regen-loading { color: var(--text-muted); font-style: italic; font-size: 0.85em; }
+
+/* ── Diagnostic view ── */
+.delve-diagnostic {
+  display: flex; flex-direction: column; height: 100%; overflow: hidden;
+}
+.delve-diagnostic__header {
+  padding: 16px 16px 10px;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+.delve-diagnostic__hint { color: var(--text-muted); font-size: 0.9em; margin: 4px 0 6px; }
+.delve-diagnostic__progress { margin-top: 2px; }
+.delve-diagnostic__progress--partial { font-size: 0.82em; color: var(--text-muted); }
+.delve-diagnostic__progress--complete { font-size: 0.82em; color: var(--color-green, #4caf50); font-weight: 600; }
+.delve-diagnostic__list {
+  flex: 1; overflow-y: auto; padding: 12px 16px;
+  display: flex; flex-direction: column; gap: 12px;
+}
+.delve-diagnostic__card {
+  padding: 14px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background: var(--background-secondary);
+}
+.delve-diagnostic__card-title { font-size: 1em; font-weight: 600; margin: 0 0 4px; }
+.delve-diagnostic__card-desc { font-size: 0.88em; color: var(--text-muted); margin: 0 0 12px; line-height: 1.5; }
+.delve-diagnostic__scale {
+  display: flex; gap: 4px;
+}
+.delve-diagnostic__likert-btn {
+  flex: 1; min-width: 0;
+  display: flex; flex-direction: column; align-items: center;
+  gap: 3px; padding: 8px 4px; min-height: 56px;
+  border-radius: 6px; border: 1px solid var(--background-modifier-border);
+  background: var(--background-primary); cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.delve-diagnostic__likert-btn:hover {
+  background: var(--background-modifier-hover);
+  border-color: var(--interactive-accent);
+}
+.delve-diagnostic__likert-btn--selected {
+  background: var(--interactive-accent) !important;
+  border-color: var(--interactive-accent) !important;
+}
+.delve-diagnostic__likert-btn--selected .delve-diagnostic__likert-num,
+.delve-diagnostic__likert-btn--selected .delve-diagnostic__likert-label {
+  color: var(--text-on-accent) !important;
+}
+.delve-diagnostic__likert-num {
+  font-size: 1.1em; font-weight: 700; line-height: 1;
+}
+.delve-diagnostic__likert-label {
+  font-size: 0.68em; text-align: center; color: var(--text-muted);
+  line-height: 1.2; overflow: hidden;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+}
+.delve-diagnostic__footer {
+  padding: 12px 16px;
+  border-top: 1px solid var(--background-modifier-border);
+  background: var(--background-primary);
+}
+.delve-diagnostic__confirm { width: 100%; justify-content: center; }
+.delve-diagnostic__submitting { color: var(--text-muted); font-style: italic; font-size: 0.85em; }
