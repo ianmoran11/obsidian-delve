@@ -127,7 +127,38 @@ Requirements:
 - prerequisites must only reference lessonIds that appear earlier in the curriculum
 - Keep the syllabus tightly scoped to "{{scopeSummary}}"
 - Prefer user sources when they are strong, but fill gaps with general knowledge when needed`,
-  'stage4-lesson': '// TODO: Stage 4 lesson generation prompt — to be implemented',
+  'stage4-lesson': `You are writing one lesson in an Obsidian-native personalised course on "{{topic}}".
+
+Course title: {{courseTitle}}
+Module: {{moduleTitle}}
+Lesson: {{lessonTitle}}
+Lesson brief: {{lessonDescription}}
+Prerequisites already covered: {{prerequisiteSummary}}
+Generation mode: {{generationMode}}
+
+{{contextSection}}
+
+Write a complete lesson in Obsidian-flavoured Markdown.
+
+Return a JSON object:
+{
+  "lesson": {
+    "title": "Lesson title",
+    "summary": "1-2 sentence summary of the lesson.",
+    "difficulty": "intro",
+    "bodyMarkdown": "# Optional internal headings\\n\\nLesson content...",
+    "sourceRefs": ["optional-source.md"]
+  }
+}
+
+Requirements:
+- bodyMarkdown must be valid Markdown only, with no YAML frontmatter
+- Teach to the learner's current level implied by the curriculum brief
+- Include explanation, intuition, and at least one concrete example or worked scenario
+- Keep the lesson tightly scoped to the lesson brief and prerequisites
+- difficulty must be one of: intro, intermediate, advanced
+- sourceRefs should list filenames only when the lesson materially uses user-provided sources; otherwise return []
+- Do not include navigation links, breadcrumbs, or file metadata in bodyMarkdown`,
 };
 
 export async function loadPrompt(

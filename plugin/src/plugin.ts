@@ -20,6 +20,7 @@ import { loadPrompt, PromptName } from './prompts';
 import { runStage0 } from './stages/stage0-topic';
 import { runStage1 } from './stages/stage1-concepts';
 import { resumeStage3, runStage3 } from './stages/stage3-curriculum';
+import { runStage4 } from './stages/stage4-generate';
 
 export default class DelvePlugin extends Plugin {
   settings!: DelveSettings;
@@ -166,6 +167,8 @@ export default class DelvePlugin extends Plugin {
       }
     } else if (stage === 3) {
       await resumeStage3(this, courseId);
+    } else if (stage === 4) {
+      await runStage4(this, courseId);
     }
   }
 

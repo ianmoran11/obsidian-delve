@@ -76,9 +76,28 @@ export interface GenerationProgress {
   currentLesson?: string;
 }
 
+export interface LessonDraft {
+  title: string;
+  summary: string;
+  difficulty: 'intro' | 'intermediate' | 'advanced';
+  bodyMarkdown: string;
+  sourceRefs: string[];
+}
+
+export interface Stage4OutputPaths {
+  rootDir: string;
+  courseIndexPath: string;
+  canvasPath: string;
+  modulePaths: Record<string, string>;
+  lessonPaths: Record<string, string>;
+}
+
 export interface Stage4Cache {
   courseId: CourseId;
   progress: GenerationProgress;
+  outputs?: Stage4OutputPaths;
+  status?: 'pending' | 'complete';
+  startedAt?: string;
   completedAt?: string;
 }
 

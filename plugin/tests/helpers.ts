@@ -34,6 +34,7 @@ export function makeMockPlugin() {
           write: async (_path: string, _content: string) => {},
           read: async (_path: string) => '{}',
           exists: async (_path: string) => false,
+          mkdir: async (_path: string) => {},
           remove: async (_path: string) => {},
         },
         getFiles: () => [],

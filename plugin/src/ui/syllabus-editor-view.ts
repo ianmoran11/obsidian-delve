@@ -5,6 +5,7 @@ import type { Curriculum } from '../interfaces';
 import type { SourceMode } from '../services/context';
 import { SYLLABUS_VIEW_TYPE } from '../constants';
 import { runStage3 } from '../stages/stage3-curriculum';
+import { runStage4 } from '../stages/stage4-generate';
 
 export interface SyllabusEditorViewState extends Record<string, unknown> {
   courseId: string;
@@ -28,6 +29,7 @@ export class SyllabusEditorView extends ItemView {
   };
   private saving = false;
   private dirty = false;
+  private generatingLessons = false;
 
   constructor(leaf: WorkspaceLeaf, private plugin: DelvePlugin) {
     super(leaf);
@@ -50,6 +52,7 @@ export class SyllabusEditorView extends ItemView {
     this.state = state as SyllabusEditorViewState;
     this.saving = false;
     this.dirty = false;
+    this.generatingLessons = false;
     await this.render();
   }
 
@@ -195,21 +198,22 @@ export class SyllabusEditorView extends ItemView {
       text: 'Regenerate draft',
       cls: 'delve-taxonomy__action-btn',
     }) as HTMLButtonElement;
-    regenerateBtn.disabled = this.saving;
+    regenerateBtn.disabled = this.saving || this.generatingLessons;
     regenerateBtn.addEventListener('click', () => void this.handleRegenerate());
 
     const saveBtn = actions.createEl('button', {
       text: this.saving ? 'Saving…' : 'Save draft',
       cls: 'delve-taxonomy__action-btn delve-syllabus__save',
     }) as HTMLButtonElement;
-    saveBtn.disabled = this.saving || !this.dirty;
+    saveBtn.disabled = this.saving || this.generatingLessons || !this.dirty;
     saveBtn.addEventListener('click', () => void this.handleSaveDraft());
 
     const finalizeBtn = actions.createEl('button', {
-      text: 'Generate lessons (Stage 4 soon)',
+      text: this.generatingLessons ? 'Generating lessons…' : 'Generate lessons',
       cls: 'mod-cta delve-btn-primary delve-syllabus__finalize',
     }) as HTMLButtonElement;
-    finalizeBtn.disabled = true;
+    finalizeBtn.disabled = this.saving || this.generatingLessons || Boolean(this.state.loading);
+    finalizeBtn.addEventListener('click', () => void this.handleGenerateLessons());
   }
 
   private renderField(
@@ -265,6 +269,29 @@ export class SyllabusEditorView extends ItemView {
       await runStage3(this.plugin, this.state.courseId);
     } catch (e) {
       new Notice(`Could not regenerate curriculum: ${(e as Error).message}`);
+    }
+  }
+
+  private async handleGenerateLessons(): Promise<void> {
+    if (this.generatingLessons) return;
+    this.generatingLessons = true;
+    await this.render();
+    try {
+      if (this.dirty) {
+        await this.plugin.cacheService.writeStage(this.state.courseId, 3, {
+          courseId: this.state.courseId,
+          curriculum: this.state.curriculum,
+          status: 'complete',
+          completedAt: new Date().toISOString(),
+        });
+        this.dirty = false;
+      }
+      await runStage4(this.plugin, this.state.courseId);
+    } catch (e) {
+      new Notice(`Could not generate lessons: ${(e as Error).message}`);
+    } finally {
+      this.generatingLessons = false;
+      await this.render();
     }
   }
 
