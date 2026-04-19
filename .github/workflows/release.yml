@@ -58,11 +58,10 @@ jobs:
             3. Enable **Delve** in Community Plugins
             4. Add your OpenRouter API key in **Settings → Delve**
 
-            ### What's in this release
-            - Stage 0: Topic Explorer — interactive scope tree with Split, Expand, Suggest Related
-            - Stage 1: Concept Extraction — LLM extracts 15–25 foundational concepts from your chosen scope
-            - Stage 2: Self-Assessment — rate your familiarity with each concept (Likert 1–5)
-            - Stages 3–4: Scaffolded, coming next
+            ### What’s in this release
+            - Stage 0: Topic Explorer — fully implemented
+            - Scope tree manipulation: Split, Expand, Suggest Related
+            - Stages 1–4: Scaffolded, in progress
           files: |
             plugin/main.js
             manifest.json
