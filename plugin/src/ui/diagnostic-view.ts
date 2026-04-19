@@ -1,10 +1,10 @@
-import { ItemView, WorkspaceLeaf } from 'obsidian';
+import { ItemView, Notice, WorkspaceLeaf } from 'obsidian';
 import type { ViewStateResult } from 'obsidian';
 import type DelvePlugin from '../../main';
 import type { Concept, LikertScore } from '../interfaces';
 import { DIAGNOSTIC_VIEW_TYPE } from '../constants';
 import { confirmDiagnostic } from '../stages/stage2-diagnostic';
-import { runStage3 } from '../stages/stage3-curriculum';
+import { resumeStage3, runStage3 } from '../stages/stage3-curriculum';
 
 export interface DiagnosticViewState extends Record<string, unknown> {
   courseId: string;
@@ -29,6 +29,7 @@ export class DiagnosticView extends ItemView {
   private submitting = false;
   private saved = false;
   private generatingCurriculum = false;
+  private stage3Status: 'none' | 'pending' | 'complete' = 'none';
 
   constructor(leaf: WorkspaceLeaf, private plugin: DelvePlugin) {
     super(leaf);
@@ -51,6 +52,7 @@ export class DiagnosticView extends ItemView {
     this.submitting = false;
     this.generatingCurriculum = false;
     this.saved = this.ratings.size === this.state.concepts.length && this.ratings.size > 0;
+    await this.refreshStage3Status();
     await this.render();
   }
 
@@ -64,6 +66,7 @@ export class DiagnosticView extends ItemView {
       );
       this.saved = this.ratings.size === this.state.concepts.length && this.ratings.size > 0;
       this.generatingCurriculum = false;
+      await this.refreshStage3Status();
       await this.render();
     }
   }
@@ -105,14 +108,16 @@ export class DiagnosticView extends ItemView {
         'Designing curriculum draft…';
     } else if (this.saved) {
       const savedBtn = footer.createEl('button', {
-        text: 'Assessment saved',
+        text: this.getSavedActionLabel(),
         cls: 'mod-cta delve-btn-primary delve-diagnostic__confirm',
       }) as HTMLButtonElement;
-      savedBtn.disabled = true;
+      savedBtn.disabled = false;
+      savedBtn.addEventListener('click', () => void this.handleSavedAction());
       footer.createDiv('delve-diagnostic__submitting').textContent =
-        'You can resume curriculum design from the Delve workflow when needed.';
+        this.getSavedActionHint();
     } else {
       const remaining = total - rated;
+      footer.addClass('delve-diagnostic__footer--ready');
       const confirmBtn = footer.createEl('button', {
         text: remaining === 0
           ? 'Build my curriculum →'
@@ -120,7 +125,7 @@ export class DiagnosticView extends ItemView {
         cls: 'mod-cta delve-btn-primary delve-diagnostic__confirm',
       }) as HTMLButtonElement;
       confirmBtn.disabled = remaining > 0;
-      confirmBtn.addEventListener('click', () => void this.handleConfirm());
+      this.bindConfirmActivation(confirmBtn, footer);
     }
   }
 
@@ -144,6 +149,7 @@ export class DiagnosticView extends ItemView {
         this.ratings.set(concept.id, score);
         if (this.saved) {
           this.saved = false;
+          this.stage3Status = 'none';
           void this.render();
           return;
         }
@@ -199,13 +205,62 @@ export class DiagnosticView extends ItemView {
       this.submitting = false;
       this.saved = true;
       this.generatingCurriculum = true;
+      this.stage3Status = 'pending';
       await this.render();
       await runStage3(this.plugin, this.state.courseId);
-    } catch {
+    } catch (e) {
       this.submitting = false;
       this.generatingCurriculum = false;
+      await this.refreshStage3Status();
+      new Notice(`Could not start curriculum design: ${(e as Error).message}`);
       await this.render();
     }
+  }
+
+  private async handleSavedAction(): Promise<void> {
+    if (!this.saved || this.submitting || this.generatingCurriculum) return;
+
+    this.generatingCurriculum = true;
+    await this.render();
+    try {
+      await resumeStage3(this.plugin, this.state.courseId);
+    } catch (e) {
+      this.generatingCurriculum = false;
+      await this.refreshStage3Status();
+      new Notice(`Could not open curriculum design: ${(e as Error).message}`);
+      await this.render();
+    }
+  }
+
+  private bindConfirmActivation(
+    confirmBtn: HTMLButtonElement,
+    footer: HTMLElement
+  ): void {
+    let activated = false;
+    const activate = (): void => {
+      if (activated || confirmBtn.disabled) return;
+      activated = true;
+      void this.handleConfirm();
+    };
+
+    confirmBtn.addEventListener('click', activate);
+    confirmBtn.addEventListener('pointerdown', activate);
+    confirmBtn.addEventListener('mousedown', activate);
+    confirmBtn.addEventListener('touchend', activate, { passive: true });
+    confirmBtn.addEventListener('keydown', evt => {
+      if (evt.key === 'Enter' || evt.key === ' ') {
+        evt.preventDefault();
+        activate();
+      }
+    });
+
+    footer.addEventListener('pointerdown', evt => {
+      if (confirmBtn.disabled) return;
+      const target = evt.target as HTMLElement | null;
+      if (!target) return;
+      if (target.closest('.delve-diagnostic__likert-btn')) return;
+      activate();
+    });
   }
 
   private async hydrateState(state: DiagnosticViewState): Promise<DiagnosticViewState> {
@@ -213,5 +268,35 @@ export class DiagnosticView extends ItemView {
     const stage2 = await this.plugin.cacheService.readStage(state.courseId, 2);
     if (!stage2?.proficiencyMap) return state;
     return { ...state, savedProficiencyMap: stage2.proficiencyMap };
+  }
+
+  private async refreshStage3Status(): Promise<void> {
+    if (!this.state.courseId) {
+      this.stage3Status = 'none';
+      return;
+    }
+
+    const stage3 = await this.plugin.cacheService.readStage(this.state.courseId, 3);
+    this.stage3Status = stage3?.status === 'complete'
+      ? 'complete'
+      : stage3?.status === 'pending'
+        ? 'pending'
+        : 'none';
+  }
+
+  private getSavedActionLabel(): string {
+    if (this.stage3Status === 'complete') return 'Open curriculum draft →';
+    if (this.stage3Status === 'pending') return 'Resume curriculum design →';
+    return 'Build my curriculum →';
+  }
+
+  private getSavedActionHint(): string {
+    if (this.stage3Status === 'complete') {
+      return 'Assessment saved. Your curriculum draft is ready to review.';
+    }
+    if (this.stage3Status === 'pending') {
+      return 'Assessment saved. Resume curriculum design when you are ready.';
+    }
+    return 'Assessment saved. Build the curriculum draft when you are ready.';
   }
 }

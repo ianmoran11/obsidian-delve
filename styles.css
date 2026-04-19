@@ -171,6 +171,9 @@
   border-top: 1px solid var(--background-modifier-border);
   background: var(--background-primary);
 }
+.delve-diagnostic__footer--ready {
+  cursor: pointer;
+}
 .delve-diagnostic__confirm { width: 100%; justify-content: center; }
 .delve-diagnostic__submitting { color: var(--text-muted); font-style: italic; font-size: 0.85em; }
 

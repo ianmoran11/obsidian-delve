@@ -19,7 +19,7 @@ import {
 import { loadPrompt, PromptName } from './prompts';
 import { runStage0 } from './stages/stage0-topic';
 import { runStage1 } from './stages/stage1-concepts';
-import { runStage3 } from './stages/stage3-curriculum';
+import { resumeStage3, runStage3 } from './stages/stage3-curriculum';
 
 export default class DelvePlugin extends Plugin {
   settings!: DelveSettings;
@@ -165,28 +165,7 @@ export default class DelvePlugin extends Plugin {
         this.app.workspace.revealLeaf(leaf);
       }
     } else if (stage === 3) {
-      const stage0 = await this.cacheService.readStage(courseId, 0);
-      const stage3 = await this.cacheService.readStage(courseId, 3);
-      if (stage0 && stage3?.status === 'complete') {
-        const context = await this.contextService.build();
-        const leaf = this.app.workspace.getLeaf(false);
-        await leaf.setViewState({
-          type: SYLLABUS_VIEW_TYPE,
-          active: true,
-          state: {
-            courseId,
-            seedTopic: stage0.seedTopic,
-            curriculum: stage3.curriculum,
-            sourceMode: context.mode,
-            fileCount: context.fileCount,
-            loading: false,
-          },
-        });
-        this.app.workspace.revealLeaf(leaf);
-        await this.lockService.release();
-      } else {
-        await runStage3(this, courseId);
-      }
+      await resumeStage3(this, courseId);
     }
   }
 

@@ -5268,6 +5268,30 @@ async function runStage3(plugin, courseId) {
     throw e;
   }
 }
+async function resumeStage3(plugin, courseId) {
+  const stage0 = await plugin.cacheService.readStage(courseId, 0);
+  const stage3 = await plugin.cacheService.readStage(courseId, 3);
+  if (stage0 && stage3?.status === "complete") {
+    const context = await plugin.contextService.build();
+    const leaf = plugin.app.workspace.getLeaf(false);
+    await leaf.setViewState({
+      type: SYLLABUS_VIEW_TYPE,
+      active: true,
+      state: {
+        courseId,
+        seedTopic: stage0.seedTopic,
+        curriculum: stage3.curriculum,
+        sourceMode: context.mode,
+        fileCount: context.fileCount,
+        loading: false
+      }
+    });
+    plugin.app.workspace.revealLeaf(leaf);
+    await plugin.lockService.release();
+    return;
+  }
+  await runStage3(plugin, courseId);
+}
 function emptyCurriculum(courseId, seedTopic) {
   return {
     courseId,
@@ -5357,6 +5381,7 @@ var DiagnosticView = class extends import_obsidian10.ItemView {
     __publicField(this, "submitting", false);
     __publicField(this, "saved", false);
     __publicField(this, "generatingCurriculum", false);
+    __publicField(this, "stage3Status", "none");
   }
   getViewType() {
     return DIAGNOSTIC_VIEW_TYPE;
@@ -5375,6 +5400,7 @@ var DiagnosticView = class extends import_obsidian10.ItemView {
     this.submitting = false;
     this.generatingCurriculum = false;
     this.saved = this.ratings.size === this.state.concepts.length && this.ratings.size > 0;
+    await this.refreshStage3Status();
     await this.render();
   }
   getState() {
@@ -5388,6 +5414,7 @@ var DiagnosticView = class extends import_obsidian10.ItemView {
       );
       this.saved = this.ratings.size === this.state.concepts.length && this.ratings.size > 0;
       this.generatingCurriculum = false;
+      await this.refreshStage3Status();
       await this.render();
     }
   }
@@ -5422,19 +5449,21 @@ var DiagnosticView = class extends import_obsidian10.ItemView {
       footer.createDiv("delve-diagnostic__submitting").textContent = "Designing curriculum draft\u2026";
     } else if (this.saved) {
       const savedBtn = footer.createEl("button", {
-        text: "Assessment saved",
+        text: this.getSavedActionLabel(),
         cls: "mod-cta delve-btn-primary delve-diagnostic__confirm"
       });
-      savedBtn.disabled = true;
-      footer.createDiv("delve-diagnostic__submitting").textContent = "You can resume curriculum design from the Delve workflow when needed.";
+      savedBtn.disabled = false;
+      savedBtn.addEventListener("click", () => void this.handleSavedAction());
+      footer.createDiv("delve-diagnostic__submitting").textContent = this.getSavedActionHint();
     } else {
       const remaining = total - rated;
+      footer.addClass("delve-diagnostic__footer--ready");
       const confirmBtn = footer.createEl("button", {
         text: remaining === 0 ? "Build my curriculum \u2192" : `Rate all concepts to continue (${remaining} remaining)`,
         cls: "mod-cta delve-btn-primary delve-diagnostic__confirm"
       });
       confirmBtn.disabled = remaining > 0;
-      confirmBtn.addEventListener("click", () => void this.handleConfirm());
+      this.bindConfirmActivation(confirmBtn, footer);
     }
   }
   renderConceptCard(parent, concept) {
@@ -5454,6 +5483,7 @@ var DiagnosticView = class extends import_obsidian10.ItemView {
         this.ratings.set(concept.id, score);
         if (this.saved) {
           this.saved = false;
+          this.stage3Status = "none";
           void this.render();
           return;
         }
@@ -5505,13 +5535,59 @@ var DiagnosticView = class extends import_obsidian10.ItemView {
       this.submitting = false;
       this.saved = true;
       this.generatingCurriculum = true;
+      this.stage3Status = "pending";
       await this.render();
       await runStage3(this.plugin, this.state.courseId);
-    } catch {
+    } catch (e) {
       this.submitting = false;
       this.generatingCurriculum = false;
+      await this.refreshStage3Status();
+      new import_obsidian10.Notice(`Could not start curriculum design: ${e.message}`);
       await this.render();
     }
+  }
+  async handleSavedAction() {
+    if (!this.saved || this.submitting || this.generatingCurriculum)
+      return;
+    this.generatingCurriculum = true;
+    await this.render();
+    try {
+      await resumeStage3(this.plugin, this.state.courseId);
+    } catch (e) {
+      this.generatingCurriculum = false;
+      await this.refreshStage3Status();
+      new import_obsidian10.Notice(`Could not open curriculum design: ${e.message}`);
+      await this.render();
+    }
+  }
+  bindConfirmActivation(confirmBtn, footer) {
+    let activated = false;
+    const activate = () => {
+      if (activated || confirmBtn.disabled)
+        return;
+      activated = true;
+      void this.handleConfirm();
+    };
+    confirmBtn.addEventListener("click", activate);
+    confirmBtn.addEventListener("pointerdown", activate);
+    confirmBtn.addEventListener("mousedown", activate);
+    confirmBtn.addEventListener("touchend", activate, { passive: true });
+    confirmBtn.addEventListener("keydown", (evt) => {
+      if (evt.key === "Enter" || evt.key === " ") {
+        evt.preventDefault();
+        activate();
+      }
+    });
+    footer.addEventListener("pointerdown", (evt) => {
+      if (confirmBtn.disabled)
+        return;
+      const target = evt.target;
+      if (!target)
+        return;
+      if (target.closest(".delve-diagnostic__likert-btn"))
+        return;
+      activate();
+    });
   }
   async hydrateState(state) {
     if (state.savedProficiencyMap || !state.courseId)
@@ -5520,6 +5596,30 @@ var DiagnosticView = class extends import_obsidian10.ItemView {
     if (!stage2?.proficiencyMap)
       return state;
     return { ...state, savedProficiencyMap: stage2.proficiencyMap };
+  }
+  async refreshStage3Status() {
+    if (!this.state.courseId) {
+      this.stage3Status = "none";
+      return;
+    }
+    const stage3 = await this.plugin.cacheService.readStage(this.state.courseId, 3);
+    this.stage3Status = stage3?.status === "complete" ? "complete" : stage3?.status === "pending" ? "pending" : "none";
+  }
+  getSavedActionLabel() {
+    if (this.stage3Status === "complete")
+      return "Open curriculum draft \u2192";
+    if (this.stage3Status === "pending")
+      return "Resume curriculum design \u2192";
+    return "Build my curriculum \u2192";
+  }
+  getSavedActionHint() {
+    if (this.stage3Status === "complete") {
+      return "Assessment saved. Your curriculum draft is ready to review.";
+    }
+    if (this.stage3Status === "pending") {
+      return "Assessment saved. Resume curriculum design when you are ready.";
+    }
+    return "Assessment saved. Build the curriculum draft when you are ready.";
   }
 };
 
@@ -6067,28 +6167,7 @@ var DelvePlugin = class extends import_obsidian13.Plugin {
         this.app.workspace.revealLeaf(leaf);
       }
     } else if (stage === 3) {
-      const stage0 = await this.cacheService.readStage(courseId, 0);
-      const stage3 = await this.cacheService.readStage(courseId, 3);
-      if (stage0 && stage3?.status === "complete") {
-        const context = await this.contextService.build();
-        const leaf = this.app.workspace.getLeaf(false);
-        await leaf.setViewState({
-          type: SYLLABUS_VIEW_TYPE,
-          active: true,
-          state: {
-            courseId,
-            seedTopic: stage0.seedTopic,
-            curriculum: stage3.curriculum,
-            sourceMode: context.mode,
-            fileCount: context.fileCount,
-            loading: false
-          }
-        });
-        this.app.workspace.revealLeaf(leaf);
-        await this.lockService.release();
-      } else {
-        await runStage3(this, courseId);
-      }
+      await resumeStage3(this, courseId);
     }
   }
   async handleLoadError(error) {

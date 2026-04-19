@@ -104,6 +104,36 @@ export async function runStage3(
   }
 }
 
+export async function resumeStage3(
+  plugin: DelvePlugin,
+  courseId: string
+): Promise<void> {
+  const stage0 = await plugin.cacheService.readStage(courseId, 0);
+  const stage3 = await plugin.cacheService.readStage(courseId, 3);
+
+  if (stage0 && stage3?.status === 'complete') {
+    const context = await plugin.contextService.build();
+    const leaf = plugin.app.workspace.getLeaf(false);
+    await leaf.setViewState({
+      type: SYLLABUS_VIEW_TYPE,
+      active: true,
+      state: {
+        courseId,
+        seedTopic: stage0.seedTopic,
+        curriculum: stage3.curriculum,
+        sourceMode: context.mode,
+        fileCount: context.fileCount,
+        loading: false,
+      },
+    });
+    plugin.app.workspace.revealLeaf(leaf);
+    await plugin.lockService.release();
+    return;
+  }
+
+  await runStage3(plugin, courseId);
+}
+
 function emptyCurriculum(courseId: string, seedTopic: string): Curriculum {
   return {
     courseId,
