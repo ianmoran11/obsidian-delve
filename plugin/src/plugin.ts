@@ -6,8 +6,9 @@ import { LockService } from './services/lock';
 import { ContextService } from './services/context';
 import { TopicInputModal } from './ui/topic-input-modal';
 import { TaxonomyView } from './ui/taxonomy-view';
+import { ConceptsView } from './ui/concepts-view';
 import { ResumeModal } from './ui/resume-modal';
-import { TAXONOMY_VIEW_TYPE } from './constants';
+import { TAXONOMY_VIEW_TYPE, CONCEPTS_VIEW_TYPE } from './constants';
 import { loadPrompt, PromptName } from './prompts';
 
 export default class DelvePlugin extends Plugin {
@@ -30,9 +31,7 @@ export default class DelvePlugin extends Plugin {
     }
   }
 
-  async onunload(): Promise<void> {
-    // Lock is intentionally preserved so the next load can offer resume
-  }
+  async onunload(): Promise<void> {}
 
   async loadSettings(): Promise<void> {
     const raw = await this.loadData();
@@ -64,10 +63,8 @@ export default class DelvePlugin extends Plugin {
   }
 
   private registerViews(): void {
-    this.registerView(
-      TAXONOMY_VIEW_TYPE,
-      leaf => new TaxonomyView(leaf, this)
-    );
+    this.registerView(TAXONOMY_VIEW_TYPE, leaf => new TaxonomyView(leaf, this));
+    this.registerView(CONCEPTS_VIEW_TYPE, leaf => new ConceptsView(leaf, this));
   }
 
   private registerCommands(): void {
@@ -87,27 +84,50 @@ export default class DelvePlugin extends Plugin {
       const choice = await modal.waitForChoice();
 
       if (choice === 'resume') {
-        if (lock.stage === 0) {
-          const cached = await this.cacheService.readStage(lock.courseId, 0);
-          if (cached?.taxonomy?.length) {
-            const leaf = this.app.workspace.getLeaf(false);
-            await leaf.setViewState({
-              type: TAXONOMY_VIEW_TYPE,
-              active: true,
-              state: {
-                courseId: lock.courseId,
-                seedTopic: cached.seedTopic,
-                taxonomy: cached.taxonomy,
-              },
-            });
-            this.app.workspace.revealLeaf(leaf);
-          }
-        }
+        await this.resumeStage(lock.courseId, lock.stage);
       } else {
         await this.lockService.release();
       }
     } catch (e) {
       console.warn('Delve: resume check failed', e);
+    }
+  }
+
+  private async resumeStage(
+    courseId: string,
+    stage: number
+  ): Promise<void> {
+    if (stage === 0) {
+      const cached = await this.cacheService.readStage(courseId, 0);
+      if (cached?.taxonomy?.length) {
+        const leaf = this.app.workspace.getLeaf(false);
+        await leaf.setViewState({
+          type: TAXONOMY_VIEW_TYPE,
+          active: true,
+          state: { courseId, seedTopic: cached.seedTopic, taxonomy: cached.taxonomy },
+        });
+        this.app.workspace.revealLeaf(leaf);
+      }
+    } else if (stage === 1) {
+      const cached = await this.cacheService.readStage(courseId, 1);
+      const stage0 = await this.cacheService.readStage(courseId, 0);
+      if (cached?.concepts?.length && stage0) {
+        const context = await this.contextService.build();
+        const leaf = this.app.workspace.getLeaf(false);
+        await leaf.setViewState({
+          type: CONCEPTS_VIEW_TYPE,
+          active: true,
+          state: {
+            courseId,
+            seedTopic: stage0.seedTopic,
+            concepts: cached.concepts,
+            sourceMode: context.mode,
+            fileCount: context.fileCount,
+          },
+        });
+        this.app.workspace.revealLeaf(leaf);
+        await this.lockService.release();
+      }
     }
   }
 
@@ -119,8 +139,6 @@ export default class DelvePlugin extends Plugin {
         'delve-load-error.md',
         `# Delve failed to load\n\n${error.message}\n\n\`\`\`\n${error.stack}\n\`\`\``
       );
-    } catch {
-      // ignore secondary failure
-    }
+    } catch { /* ignore */ }
   }
 }

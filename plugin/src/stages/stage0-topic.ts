@@ -9,6 +9,7 @@ import {
   validateAndRepair,
 } from '../services/validator';
 import { TAXONOMY_VIEW_TYPE } from '../constants';
+import { runStage1 } from './stage1-concepts';
 
 export async function runStage0(
   plugin: DelvePlugin,
@@ -61,9 +62,7 @@ export async function disaggregateNode(
     selectedScope: selectedScope.join(', ') || 'none selected yet',
   });
   const validated = await validateAndRepair(
-    raw,
-    DisaggregateResponseSchema,
-    plugin.llmService,
+    raw, DisaggregateResponseSchema, plugin.llmService,
     'Return { nodes: [...] } with 2–5 TaxonomyNode items each having id, title, description.'
   );
   return validated.nodes;
@@ -81,9 +80,7 @@ export async function expandNode(
     nodeDescription: node.description,
   });
   const validated = await validateAndRepair(
-    raw,
-    ExpandResponseSchema,
-    plugin.llmService,
+    raw, ExpandResponseSchema, plugin.llmService,
     'Return { children: [...] } with 3–6 TaxonomyNode items each having id, title, description.'
   );
   return validated.children;
@@ -103,9 +100,7 @@ export async function suggestRelated(
     selectedScope: selectedScope.join(', ') || 'none selected yet',
   });
   const validated = await validateAndRepair(
-    raw,
-    SuggestRelatedResponseSchema,
-    plugin.llmService,
+    raw, SuggestRelatedResponseSchema, plugin.llmService,
     'Return { topics: [...] } with 2–5 TaxonomyNode items not already in the existing list.'
   );
   return validated.topics;
@@ -123,25 +118,19 @@ export async function confirmScope(
     .join(', ');
 
   const cache: Stage0Cache = {
-    courseId,
-    seedTopic,
-    taxonomy,
-    selectedScope,
-    scopeSummary,
+    courseId, seedTopic, taxonomy, selectedScope, scopeSummary,
     completedAt: new Date().toISOString(),
   };
 
   await plugin.cacheService.writeStage(courseId, 0, cache);
   await plugin.lockService.release();
-  new Notice('Scope confirmed. Ready for concept extraction.');
+
+  // Chain directly into Stage 1
+  await runStage1(plugin, courseId);
 }
 
-// ── Tree mutation helpers ──
-
 export function replaceNode(
-  taxonomy: TaxonomyNode[],
-  targetId: string,
-  replacements: TaxonomyNode[]
+  taxonomy: TaxonomyNode[], targetId: string, replacements: TaxonomyNode[]
 ): TaxonomyNode[] {
   const result: TaxonomyNode[] = [];
   for (const node of taxonomy) {
@@ -150,9 +139,7 @@ export function replaceNode(
     } else {
       result.push({
         ...node,
-        children: node.children
-          ? replaceNode(node.children, targetId, replacements)
-          : undefined,
+        children: node.children ? replaceNode(node.children, targetId, replacements) : undefined,
       });
     }
   }
@@ -160,9 +147,7 @@ export function replaceNode(
 }
 
 export function addChildren(
-  taxonomy: TaxonomyNode[],
-  targetId: string,
-  newChildren: TaxonomyNode[]
+  taxonomy: TaxonomyNode[], targetId: string, newChildren: TaxonomyNode[]
 ): TaxonomyNode[] {
   return taxonomy.map(node => {
     if (node.id === targetId) {
@@ -176,8 +161,7 @@ export function addChildren(
 }
 
 export function appendTopLevel(
-  taxonomy: TaxonomyNode[],
-  nodes: TaxonomyNode[]
+  taxonomy: TaxonomyNode[], nodes: TaxonomyNode[]
 ): TaxonomyNode[] {
   return [...taxonomy, ...nodes];
 }
