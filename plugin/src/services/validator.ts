@@ -1,6 +1,12 @@
 import { z } from 'zod';
 import type { LlmService } from './openrouter';
-import type { Curriculum, LessonSpec, ModuleSpec, TaxonomyNode } from '../interfaces';
+import type {
+  Curriculum,
+  LessonDraft,
+  LessonSpec,
+  ModuleSpec,
+  TaxonomyNode,
+} from '../interfaces';
 
 export async function validateAndRepair<T>(
   data: unknown,
@@ -90,3 +96,41 @@ export const CurriculumSchema: z.ZodType<Curriculum> = z.object({
 export const Stage3ResponseSchema = z.object({
   curriculum: CurriculumSchema,
 });
+
+const DifficultySchema = z
+  .string()
+  .transform(value => normalizeDifficulty(value))
+  .pipe(z.enum(['intro', 'intermediate', 'advanced']));
+
+export const LessonDraftSchema = z
+  .object({
+    title: z.string().min(1),
+    summary: z.string().min(1),
+    difficulty: DifficultySchema,
+    bodyMarkdown: z.string().min(1),
+    sourceRefs: z.array(z.string()).optional(),
+  })
+  .transform(data => ({
+    ...data,
+    sourceRefs: data.sourceRefs ?? [],
+  }));
+
+export const Stage4LessonResponseSchema = z.object({
+  lesson: LessonDraftSchema,
+});
+
+function normalizeDifficulty(value: string): string {
+  const normalized = value.trim().toLowerCase();
+
+  if (['intro', 'beginner', 'basic', 'foundational', 'foundation', 'introductory'].includes(normalized)) {
+    return 'intro';
+  }
+  if (['intermediate', 'medium', 'moderate'].includes(normalized)) {
+    return 'intermediate';
+  }
+  if (['advanced', 'expert', 'hard', 'deep-dive'].includes(normalized)) {
+    return 'advanced';
+  }
+
+  return normalized;
+}

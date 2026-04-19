@@ -30,7 +30,7 @@ __export(main_exports, {
 module.exports = __toCommonJS(main_exports);
 
 // src/plugin.ts
-var import_obsidian13 = require("obsidian");
+var import_obsidian14 = require("obsidian");
 
 // src/settings.ts
 var import_obsidian = require("obsidian");
@@ -4499,6 +4499,33 @@ var CurriculumSchema = external_exports.object({
 var Stage3ResponseSchema = external_exports.object({
   curriculum: CurriculumSchema
 });
+var DifficultySchema = external_exports.string().transform((value) => normalizeDifficulty(value)).pipe(external_exports.enum(["intro", "intermediate", "advanced"]));
+var LessonDraftSchema = external_exports.object({
+  title: external_exports.string().min(1),
+  summary: external_exports.string().min(1),
+  difficulty: DifficultySchema,
+  bodyMarkdown: external_exports.string().min(1),
+  sourceRefs: external_exports.array(external_exports.string()).optional()
+}).transform((data) => ({
+  ...data,
+  sourceRefs: data.sourceRefs ?? []
+}));
+var Stage4LessonResponseSchema = external_exports.object({
+  lesson: LessonDraftSchema
+});
+function normalizeDifficulty(value) {
+  const normalized = value.trim().toLowerCase();
+  if (["intro", "beginner", "basic", "foundational", "foundation", "introductory"].includes(normalized)) {
+    return "intro";
+  }
+  if (["intermediate", "medium", "moderate"].includes(normalized)) {
+    return "intermediate";
+  }
+  if (["advanced", "expert", "hard", "deep-dive"].includes(normalized)) {
+    return "advanced";
+  }
+  return normalized;
+}
 
 // src/stages/stage1-concepts.ts
 var import_obsidian3 = require("obsidian");
@@ -5624,8 +5651,542 @@ var DiagnosticView = class extends import_obsidian10.ItemView {
 };
 
 // src/ui/syllabus-editor-view.ts
+var import_obsidian12 = require("obsidian");
+
+// src/stages/stage4-generate.ts
 var import_obsidian11 = require("obsidian");
-var SyllabusEditorView = class extends import_obsidian11.ItemView {
+
+// src/prompts/index.ts
+var DEFAULTS = {
+  "stage0-taxonomy": `You are a curriculum expert. Given the broad topic "{{topic}}", generate a comprehensive hierarchical taxonomy of the subject area.
+
+Return a JSON object with this EXACT structure:
+{
+  "taxonomy": [
+    {
+      "id": "unique-kebab-case-id",
+      "title": "Domain Title",
+      "description": "One sentence describing this domain.",
+      "children": [
+        { "id": "unique-child-id", "title": "Subtopic", "description": "One sentence.", "children": [] }
+      ]
+    }
+  ]
+}
+
+Requirements:
+- 3 to 5 top-level domains, 3 to 6 subtopics per domain, maximum 3 levels deep
+- Every node MUST have: id (unique kebab-case), title, description
+- Cover the full breadth of "{{topic}}" comprehensively`,
+  "stage0-disaggregate": `A learner is scoping a course on "{{topic}}".
+
+Split "{{nodeTitle}}" ({{nodeDescription}}) into more specific, distinct alternatives at the same level.
+Current selections: {{selectedScope}}
+
+Return: { "nodes": [ { "id": "kebab-id", "title": "...", "description": "One sentence." } ] }
+- 2 to 5 nodes, non-overlapping, covering what "{{nodeTitle}}" covered
+- Do NOT include "{{nodeTitle}}" itself`,
+  "stage0-expand": `A learner is scoping a course on "{{topic}}".
+
+Add detailed subtopics under "{{nodeTitle}}" ({{nodeDescription}}).
+
+Return: { "children": [ { "id": "kebab-id", "title": "...", "description": "One sentence." } ] }
+- 3 to 6 children, fine-grained and learnable within "{{nodeTitle}}"`,
+  "stage0-suggest-related": `A learner is building a course on "{{topic}}".
+Existing topics: {{existingTopics}}
+Current selections: {{selectedScope}}
+
+Suggest 2\u20135 additional top-level topics NOT already listed.
+
+Return: { "topics": [ { "id": "kebab-id", "title": "...", "description": "One sentence explaining relevance." } ] }`,
+  "stage1-concepts": `You are a curriculum expert building a personalised course on "{{topic}}", scoped to: {{scopeSummary}}.
+
+Selected areas: {{scopeNodes}}
+
+{{contextSection}}
+
+Extract 15 to 25 foundational concepts and key terms the learner needs to master this scope.
+
+Return a JSON object:
+{
+  "concepts": [
+    {
+      "id": "unique-kebab-id",
+      "title": "Concept Name",
+      "description": "2\u20133 sentences explaining this concept and why it matters for the learner.",
+      "sourceRefs": []
+    }
+  ]
+}
+
+Requirements:
+- 15 to 25 concepts, ordered from foundational to advanced
+- Each concept must be DISTINCT and LEARNABLE \u2014 not just a vocabulary term
+- If source material was provided and a concept appears in it, list the source filename(s) in sourceRefs
+- If no source material was provided, sourceRefs must be an empty array
+- Cover prerequisites, core ideas, and practical applications within the scope`,
+  "stage3-curriculum": `You are designing a personalised course syllabus for "{{topic}}", scoped to: {{scopeSummary}}.
+
+Selected scope nodes: {{scopeNodes}}
+
+Foundational concepts and learner confidence:
+{{conceptProficiency}}
+
+{{contextSection}}
+
+Design a draft curriculum that adapts to the learner's current knowledge.
+
+Return a JSON object:
+{
+  "curriculum": {
+    "courseId": "{{courseId}}",
+    "title": "Course title",
+    "modules": [
+      {
+        "moduleId": "module-kebab-id",
+        "title": "Module title",
+        "description": "2-3 sentences explaining the module's role in the course.",
+        "lessons": [
+          {
+            "lessonId": "lesson-kebab-id",
+            "title": "Lesson title",
+            "description": "1-2 sentences explaining what the learner will achieve.",
+            "prerequisites": ["earlier-lesson-id"]
+          }
+        ]
+      }
+    ]
+  }
+}
+
+Requirements:
+- Create 3 to 6 modules with 2 to 5 lessons each
+- Order lessons from foundational to advanced within each module
+- Use the learner's proficiency scores:
+  - scores 1-2 mean teach thoroughly
+  - score 3 means concise but still included
+  - scores 4-5 mean condense or omit unless needed as a prerequisite
+- Every lesson must have a unique lessonId in kebab-case
+- prerequisites must only reference lessonIds that appear earlier in the curriculum
+- Keep the syllabus tightly scoped to "{{scopeSummary}}"
+- Prefer user sources when they are strong, but fill gaps with general knowledge when needed`,
+  "stage4-lesson": `You are writing one lesson in an Obsidian-native personalised course on "{{topic}}".
+
+Course title: {{courseTitle}}
+Module: {{moduleTitle}}
+Lesson: {{lessonTitle}}
+Lesson brief: {{lessonDescription}}
+Prerequisites already covered: {{prerequisiteSummary}}
+Generation mode: {{generationMode}}
+
+{{contextSection}}
+
+Write a complete lesson in Obsidian-flavoured Markdown.
+
+Return a JSON object:
+{
+  "lesson": {
+    "title": "Lesson title",
+    "summary": "1-2 sentence summary of the lesson.",
+    "difficulty": "intro",
+    "bodyMarkdown": "# Optional internal headings\\n\\nLesson content...",
+    "sourceRefs": ["optional-source.md"]
+  }
+}
+
+Requirements:
+- bodyMarkdown must be valid Markdown only, with no YAML frontmatter
+- Teach to the learner's current level implied by the curriculum brief
+- Include explanation, intuition, and at least one concrete example or worked scenario
+- Keep the lesson tightly scoped to the lesson brief and prerequisites
+- difficulty must be one of: intro, intermediate, advanced
+- sourceRefs should list filenames only when the lesson materially uses user-provided sources; otherwise return []
+- Do not include navigation links, breadcrumbs, or file metadata in bodyMarkdown`
+};
+async function loadPrompt(plugin, name) {
+  const override = plugin.settings.promptOverrides[name];
+  if (override?.trim())
+    return override.trim();
+  return DEFAULTS[name];
+}
+
+// src/writers/canvas.ts
+async function writeCanvas(plugin, curriculum, canvasPath, lessonPaths, modulePaths, courseIndexPath) {
+  const nodes = [];
+  const edges = [];
+  nodes.push({
+    id: "course-index",
+    type: "file",
+    file: courseIndexPath,
+    x: 40,
+    y: 40,
+    width: 320,
+    height: 120
+  });
+  curriculum.modules.forEach((module2, moduleIndex) => {
+    const moduleNodeId = `module-${module2.moduleId}`;
+    nodes.push({
+      id: moduleNodeId,
+      type: "file",
+      file: modulePaths[module2.moduleId],
+      x: 420,
+      y: 40 + moduleIndex * 260,
+      width: 320,
+      height: 140
+    });
+    edges.push({
+      id: `edge-course-${module2.moduleId}`,
+      fromNode: "course-index",
+      toNode: moduleNodeId
+    });
+    module2.lessons.forEach((lesson, lessonIndex) => {
+      const lessonNodeId = `lesson-${lesson.lessonId}`;
+      nodes.push({
+        id: lessonNodeId,
+        type: "file",
+        file: lessonPaths[lesson.lessonId],
+        x: 840 + lessonIndex * 340,
+        y: 40 + moduleIndex * 260,
+        width: 300,
+        height: 140
+      });
+      edges.push({
+        id: `edge-module-${module2.moduleId}-${lesson.lessonId}`,
+        fromNode: moduleNodeId,
+        toNode: lessonNodeId
+      });
+      lesson.prerequisites.forEach((prereq) => {
+        edges.push({
+          id: `edge-prereq-${prereq}-${lesson.lessonId}`,
+          fromNode: `lesson-${prereq}`,
+          toNode: lessonNodeId
+        });
+      });
+    });
+  });
+  await plugin.app.vault.adapter.write(
+    canvasPath,
+    JSON.stringify({ nodes, edges }, null, 2)
+  );
+}
+
+// src/writers/frontmatter.ts
+function buildFrontmatter(data) {
+  const lines = ["---"];
+  for (const [key, value] of Object.entries(data)) {
+    if (Array.isArray(value)) {
+      lines.push(`${key}:`);
+      for (const item of value) {
+        lines.push(`  - ${escapeYaml(item)}`);
+      }
+      continue;
+    }
+    if (typeof value === "boolean") {
+      lines.push(`${key}: ${value ? "true" : "false"}`);
+      continue;
+    }
+    lines.push(`${key}: ${escapeYaml(value)}`);
+  }
+  lines.push("---");
+  return lines.join("\n");
+}
+function escapeYaml(value) {
+  if (value === "")
+    return '""';
+  if (/^[a-zA-Z0-9_.\/:-]+$/.test(value))
+    return value;
+  return JSON.stringify(value);
+}
+
+// src/writers/markdown.ts
+async function writeMarkdownFile(plugin, path, content) {
+  await plugin.app.vault.adapter.write(path, content.trimEnd() + "\n");
+}
+
+// src/writers/moc.ts
+async function writeModuleMoc(plugin, path, module2, courseIndexLink, lessonLinks) {
+  const content = [
+    `# ${module2.title}`,
+    "",
+    `Back to ${courseIndexLink}`,
+    "",
+    module2.description,
+    "",
+    "## Lessons",
+    "",
+    ...lessonLinks.map((link) => `- ${link}`)
+  ].join("\n");
+  await writeMarkdownFile(plugin, path, content);
+}
+
+// src/writers/navigation.ts
+function buildNavigationLinks(courseIndexLink, moduleLink, previousLessonLink, nextLessonLink) {
+  const breadcrumbs = `**Course:** ${courseIndexLink} > ${moduleLink}`;
+  const previous = previousLessonLink ? `Previous: ${previousLessonLink}` : "Previous: none";
+  const next = nextLessonLink ? `Next: ${nextLessonLink}` : "Next: none";
+  return {
+    breadcrumbs,
+    sequence: `${previous} | ${next}`
+  };
+}
+
+// src/stages/stage4-generate.ts
+async function runStage4(plugin, courseId) {
+  await plugin.lockService.acquire(courseId, 4);
+  const stage0 = await plugin.cacheService.readStage(courseId, 0);
+  const stage3 = await plugin.cacheService.readStage(courseId, 3);
+  if (!stage0 || !stage3?.curriculum) {
+    await plugin.lockService.release();
+    throw new Error("Stage 0 and Stage 3 must be complete before lesson generation can begin.");
+  }
+  const curriculum = stage3.curriculum;
+  const context = await plugin.contextService.build();
+  const outputs = buildOutputPaths(curriculum);
+  await ensureFolderTree(plugin, outputs);
+  const totalLessons = curriculum.modules.reduce((sum, module2) => sum + module2.lessons.length, 0);
+  await plugin.cacheService.writeStage(courseId, 4, {
+    courseId,
+    progress: {
+      totalLessons,
+      completedLessons: 0
+    },
+    outputs,
+    status: "pending",
+    startedAt: (/* @__PURE__ */ new Date()).toISOString()
+  });
+  try {
+    new import_obsidian11.Notice("Generating lesson notes\u2026");
+    const promptTemplate = await loadPrompt(plugin, "stage4-lesson");
+    const lessonOrder = flattenLessons(curriculum);
+    const lessonDrafts = /* @__PURE__ */ new Map();
+    for (let index = 0; index < lessonOrder.length; index++) {
+      const item = lessonOrder[index];
+      const { module: module2, lesson } = item;
+      await plugin.cacheService.writeStage(courseId, 4, {
+        courseId,
+        progress: {
+          totalLessons,
+          completedLessons: index,
+          currentLesson: lesson.title
+        },
+        outputs,
+        status: "pending",
+        startedAt: (/* @__PURE__ */ new Date()).toISOString()
+      });
+      const raw = await plugin.llmService.callJson(
+        promptTemplate,
+        {
+          topic: stage0.seedTopic,
+          courseTitle: curriculum.title,
+          moduleTitle: module2.title,
+          lessonTitle: lesson.title,
+          lessonDescription: lesson.description,
+          prerequisiteSummary: describePrerequisites(lesson, lessonOrder, lessonDrafts),
+          generationMode: context.mode,
+          contextSection: buildContextSection3(context)
+        }
+      );
+      const validated = await validateAndRepair(
+        raw,
+        Stage4LessonResponseSchema,
+        plugin.llmService,
+        "Return { lesson: { title, summary, difficulty, bodyMarkdown, sourceRefs } } with non-empty Markdown in bodyMarkdown."
+      );
+      lessonDrafts.set(lesson.lessonId, {
+        ...validated.lesson,
+        difficulty: validated.lesson.difficulty,
+        sourceRefs: validated.lesson.sourceRefs ?? []
+      });
+    }
+    await writeCourseOutputs(plugin, curriculum, outputs, lessonDrafts, context.mode);
+    const cache = {
+      courseId,
+      progress: {
+        totalLessons,
+        completedLessons: totalLessons
+      },
+      outputs,
+      status: "complete",
+      startedAt: (/* @__PURE__ */ new Date()).toISOString(),
+      completedAt: (/* @__PURE__ */ new Date()).toISOString()
+    };
+    await plugin.cacheService.writeStage(courseId, 4, cache);
+    await plugin.lockService.release();
+    new import_obsidian11.Notice(`Generated ${totalLessons} lessons in ${outputs.rootDir}.`);
+  } catch (error) {
+    await plugin.lockService.release();
+    new import_obsidian11.Notice(`Delve: lesson generation failed \u2014 ${error.message}`);
+    throw error;
+  }
+}
+function buildOutputPaths(curriculum) {
+  const courseSlug = slugify(curriculum.title || curriculum.courseId);
+  const rootDir = `${VAULT_PATHS.CURRICULUM}/${courseSlug}`;
+  const courseIndexPath = `${rootDir}/Course Index.md`;
+  const canvasPath = `${rootDir}/${safeFileName(curriculum.title)}.canvas`;
+  const modulePaths = {};
+  const lessonPaths = {};
+  curriculum.modules.forEach((module2, moduleIndex) => {
+    const moduleDir = `${rootDir}/${padNumber(moduleIndex + 1)}-${slugify(module2.title)}`;
+    modulePaths[module2.moduleId] = `${moduleDir}/Module MOC.md`;
+    module2.lessons.forEach((lesson, lessonIndex) => {
+      lessonPaths[lesson.lessonId] = `${moduleDir}/${padNumber(lessonIndex + 1)}-${slugify(lesson.title)}.md`;
+    });
+  });
+  return {
+    rootDir,
+    courseIndexPath,
+    canvasPath,
+    modulePaths,
+    lessonPaths
+  };
+}
+async function ensureFolderTree(plugin, outputs) {
+  const directories = /* @__PURE__ */ new Set([VAULT_PATHS.CURRICULUM, outputs.rootDir]);
+  Object.values(outputs.modulePaths).forEach((path) => directories.add(dirname(path)));
+  Object.values(outputs.lessonPaths).forEach((path) => directories.add(dirname(path)));
+  for (const dir of directories) {
+    await ensureFolder(plugin, dir);
+  }
+}
+async function ensureFolder(plugin, path) {
+  if (!path || path === ".")
+    return;
+  const exists = await plugin.app.vault.adapter.exists(path);
+  if (exists)
+    return;
+  await plugin.app.vault.adapter.mkdir?.(path);
+}
+async function writeCourseOutputs(plugin, curriculum, outputs, lessonDrafts, mode) {
+  const lessonOrder = flattenLessons(curriculum);
+  const courseIndexLink = wikiLinkFromPath(outputs.courseIndexPath);
+  const lessonLinks = lessonOrder.map((item) => wikiLinkFromPath(outputs.lessonPaths[item.lesson.lessonId]));
+  const flatLessons = lessonOrder.map((item) => item.lesson);
+  await writeMarkdownFile(
+    plugin,
+    outputs.courseIndexPath,
+    buildCourseIndex(curriculum, outputs)
+  );
+  for (const module2 of curriculum.modules) {
+    const moduleLink = wikiLinkFromPath(outputs.modulePaths[module2.moduleId]);
+    const moduleLessonLinks = module2.lessons.map(
+      (lesson) => wikiLinkFromPath(outputs.lessonPaths[lesson.lessonId])
+    );
+    await writeModuleMoc(
+      plugin,
+      outputs.modulePaths[module2.moduleId],
+      module2,
+      courseIndexLink,
+      moduleLessonLinks
+    );
+    for (const lesson of module2.lessons) {
+      const draft = lessonDrafts.get(lesson.lessonId);
+      if (!draft) {
+        throw new Error(`Missing generated lesson draft for ${lesson.lessonId}`);
+      }
+      const lessonIndex = flatLessons.findIndex((item) => item.lessonId === lesson.lessonId);
+      const previous = lessonIndex > 0 ? flatLessons[lessonIndex - 1] : void 0;
+      const next = lessonIndex < flatLessons.length - 1 ? flatLessons[lessonIndex + 1] : void 0;
+      const navigation = buildNavigationLinks(
+        courseIndexLink,
+        moduleLink,
+        previous ? wikiLinkFromPath(outputs.lessonPaths[previous.lessonId]) : void 0,
+        next ? wikiLinkFromPath(outputs.lessonPaths[next.lessonId]) : void 0
+      );
+      const content = [
+        buildFrontmatter({
+          status: "draft",
+          difficulty: draft.difficulty,
+          lessonId: lesson.lessonId,
+          moduleId: module2.moduleId,
+          generationMode: mode,
+          sourceRefs: draft.sourceRefs,
+          generatedAt: (/* @__PURE__ */ new Date()).toISOString()
+        }),
+        "",
+        `# ${draft.title}`,
+        "",
+        navigation.breadcrumbs,
+        "",
+        `> ${draft.summary}`,
+        "",
+        draft.bodyMarkdown.trim(),
+        "",
+        "---",
+        "",
+        navigation.sequence
+      ].join("\n");
+      await writeMarkdownFile(plugin, outputs.lessonPaths[lesson.lessonId], content);
+    }
+  }
+  await writeCanvas(
+    plugin,
+    curriculum,
+    outputs.canvasPath,
+    outputs.lessonPaths,
+    outputs.modulePaths,
+    outputs.courseIndexPath
+  );
+}
+function buildCourseIndex(curriculum, outputs) {
+  const lines = [
+    `# ${curriculum.title}`,
+    "",
+    "## Modules",
+    ""
+  ];
+  curriculum.modules.forEach((module2) => {
+    lines.push(`- ${wikiLinkFromPath(outputs.modulePaths[module2.moduleId])}`);
+    module2.lessons.forEach((lesson) => {
+      lines.push(`  - ${wikiLinkFromPath(outputs.lessonPaths[lesson.lessonId])}`);
+    });
+  });
+  lines.push("", `Canvas: ${wikiLinkFromPath(outputs.canvasPath)}`);
+  return lines.join("\n");
+}
+function flattenLessons(curriculum) {
+  return curriculum.modules.flatMap(
+    (module2) => module2.lessons.map((lesson) => ({ module: module2, lesson }))
+  );
+}
+function describePrerequisites(lesson, lessonOrder, lessonDrafts) {
+  if (lesson.prerequisites.length === 0)
+    return "None";
+  return lesson.prerequisites.map((prereqId) => {
+    const prereq = lessonOrder.find((item) => item.lesson.lessonId === prereqId)?.lesson;
+    const draft = lessonDrafts.get(prereqId);
+    return prereq ? `${prereq.title}: ${draft?.summary ?? prereq.description}` : prereqId;
+  }).join("\n");
+}
+function buildContextSection3(context) {
+  if (context.mode === "knowledge-only" || !context.content) {
+    return "No source material has been provided. Write the lesson using general knowledge only.";
+  }
+  return `The learner has provided ${context.fileCount} source file(s). Prefer this material where it is strong; supplement with general knowledge when needed.
+
+${context.content}`;
+}
+function wikiLinkFromPath(path) {
+  const basename = path.split("/").pop()?.replace(/\.(md|canvas)$/i, "") ?? path;
+  return `[[${basename}]]`;
+}
+function dirname(path) {
+  const parts = path.split("/");
+  parts.pop();
+  return parts.join("/");
+}
+function slugify(value) {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "course";
+}
+function safeFileName(value) {
+  return value.replace(/[\\/:*?"<>|]/g, "").trim() || "Course";
+}
+function padNumber(value) {
+  return String(value).padStart(2, "0");
+}
+
+// src/ui/syllabus-editor-view.ts
+var SyllabusEditorView = class extends import_obsidian12.ItemView {
   constructor(leaf, plugin) {
     super(leaf);
     this.plugin = plugin;
@@ -5641,6 +6202,7 @@ var SyllabusEditorView = class extends import_obsidian11.ItemView {
     });
     __publicField(this, "saving", false);
     __publicField(this, "dirty", false);
+    __publicField(this, "generatingLessons", false);
   }
   getViewType() {
     return SYLLABUS_VIEW_TYPE;
@@ -5655,6 +6217,7 @@ var SyllabusEditorView = class extends import_obsidian11.ItemView {
     this.state = state;
     this.saving = false;
     this.dirty = false;
+    this.generatingLessons = false;
     await this.render();
   }
   getState() {
@@ -5783,19 +6346,20 @@ var SyllabusEditorView = class extends import_obsidian11.ItemView {
       text: "Regenerate draft",
       cls: "delve-taxonomy__action-btn"
     });
-    regenerateBtn.disabled = this.saving;
+    regenerateBtn.disabled = this.saving || this.generatingLessons;
     regenerateBtn.addEventListener("click", () => void this.handleRegenerate());
     const saveBtn = actions.createEl("button", {
       text: this.saving ? "Saving\u2026" : "Save draft",
       cls: "delve-taxonomy__action-btn delve-syllabus__save"
     });
-    saveBtn.disabled = this.saving || !this.dirty;
+    saveBtn.disabled = this.saving || this.generatingLessons || !this.dirty;
     saveBtn.addEventListener("click", () => void this.handleSaveDraft());
     const finalizeBtn = actions.createEl("button", {
-      text: "Generate lessons (Stage 4 soon)",
+      text: this.generatingLessons ? "Generating lessons\u2026" : "Generate lessons",
       cls: "mod-cta delve-btn-primary delve-syllabus__finalize"
     });
-    finalizeBtn.disabled = true;
+    finalizeBtn.disabled = this.saving || this.generatingLessons || Boolean(this.state.loading);
+    finalizeBtn.addEventListener("click", () => void this.handleGenerateLessons());
   }
   renderField(parent, label, value, onInput) {
     const field = parent.createDiv("delve-syllabus__field");
@@ -5826,7 +6390,7 @@ var SyllabusEditorView = class extends import_obsidian11.ItemView {
         completedAt: (/* @__PURE__ */ new Date()).toISOString()
       });
       this.dirty = false;
-      new import_obsidian11.Notice("Curriculum draft saved.");
+      new import_obsidian12.Notice("Curriculum draft saved.");
     } finally {
       this.saving = false;
       await this.render();
@@ -5836,7 +6400,30 @@ var SyllabusEditorView = class extends import_obsidian11.ItemView {
     try {
       await runStage3(this.plugin, this.state.courseId);
     } catch (e) {
-      new import_obsidian11.Notice(`Could not regenerate curriculum: ${e.message}`);
+      new import_obsidian12.Notice(`Could not regenerate curriculum: ${e.message}`);
+    }
+  }
+  async handleGenerateLessons() {
+    if (this.generatingLessons)
+      return;
+    this.generatingLessons = true;
+    await this.render();
+    try {
+      if (this.dirty) {
+        await this.plugin.cacheService.writeStage(this.state.courseId, 3, {
+          courseId: this.state.courseId,
+          curriculum: this.state.curriculum,
+          status: "complete",
+          completedAt: (/* @__PURE__ */ new Date()).toISOString()
+        });
+        this.dirty = false;
+      }
+      await runStage4(this.plugin, this.state.courseId);
+    } catch (e) {
+      new import_obsidian12.Notice(`Could not generate lessons: ${e.message}`);
+    } finally {
+      this.generatingLessons = false;
+      await this.render();
     }
   }
   markDirty() {
@@ -5861,7 +6448,7 @@ function describeSourceMode(mode, fileCount) {
 }
 
 // src/ui/resume-modal.ts
-var import_obsidian12 = require("obsidian");
+var import_obsidian13 = require("obsidian");
 var STAGE_NAMES = {
   0: "Topic Explorer",
   1: "Concept Extraction",
@@ -5869,7 +6456,7 @@ var STAGE_NAMES = {
   3: "Curriculum Design",
   4: "Content Generation"
 };
-var ResumeModal = class extends import_obsidian12.Modal {
+var ResumeModal = class extends import_obsidian13.Modal {
   constructor(app, lock) {
     super(app);
     this.lock = lock;
@@ -5891,7 +6478,7 @@ var ResumeModal = class extends import_obsidian12.Modal {
       text: `Course: ${this.lock.courseId}`,
       cls: "setting-item-description"
     });
-    new import_obsidian12.Setting(contentEl).addButton(
+    new import_obsidian13.Setting(contentEl).addButton(
       (btn) => btn.setButtonText("Resume").setCta().onClick(() => {
         this.close();
         this.resolve("resume");
@@ -5909,131 +6496,8 @@ var ResumeModal = class extends import_obsidian12.Modal {
   }
 };
 
-// src/prompts/index.ts
-var DEFAULTS = {
-  "stage0-taxonomy": `You are a curriculum expert. Given the broad topic "{{topic}}", generate a comprehensive hierarchical taxonomy of the subject area.
-
-Return a JSON object with this EXACT structure:
-{
-  "taxonomy": [
-    {
-      "id": "unique-kebab-case-id",
-      "title": "Domain Title",
-      "description": "One sentence describing this domain.",
-      "children": [
-        { "id": "unique-child-id", "title": "Subtopic", "description": "One sentence.", "children": [] }
-      ]
-    }
-  ]
-}
-
-Requirements:
-- 3 to 5 top-level domains, 3 to 6 subtopics per domain, maximum 3 levels deep
-- Every node MUST have: id (unique kebab-case), title, description
-- Cover the full breadth of "{{topic}}" comprehensively`,
-  "stage0-disaggregate": `A learner is scoping a course on "{{topic}}".
-
-Split "{{nodeTitle}}" ({{nodeDescription}}) into more specific, distinct alternatives at the same level.
-Current selections: {{selectedScope}}
-
-Return: { "nodes": [ { "id": "kebab-id", "title": "...", "description": "One sentence." } ] }
-- 2 to 5 nodes, non-overlapping, covering what "{{nodeTitle}}" covered
-- Do NOT include "{{nodeTitle}}" itself`,
-  "stage0-expand": `A learner is scoping a course on "{{topic}}".
-
-Add detailed subtopics under "{{nodeTitle}}" ({{nodeDescription}}).
-
-Return: { "children": [ { "id": "kebab-id", "title": "...", "description": "One sentence." } ] }
-- 3 to 6 children, fine-grained and learnable within "{{nodeTitle}}"`,
-  "stage0-suggest-related": `A learner is building a course on "{{topic}}".
-Existing topics: {{existingTopics}}
-Current selections: {{selectedScope}}
-
-Suggest 2\u20135 additional top-level topics NOT already listed.
-
-Return: { "topics": [ { "id": "kebab-id", "title": "...", "description": "One sentence explaining relevance." } ] }`,
-  "stage1-concepts": `You are a curriculum expert building a personalised course on "{{topic}}", scoped to: {{scopeSummary}}.
-
-Selected areas: {{scopeNodes}}
-
-{{contextSection}}
-
-Extract 15 to 25 foundational concepts and key terms the learner needs to master this scope.
-
-Return a JSON object:
-{
-  "concepts": [
-    {
-      "id": "unique-kebab-id",
-      "title": "Concept Name",
-      "description": "2\u20133 sentences explaining this concept and why it matters for the learner.",
-      "sourceRefs": []
-    }
-  ]
-}
-
-Requirements:
-- 15 to 25 concepts, ordered from foundational to advanced
-- Each concept must be DISTINCT and LEARNABLE \u2014 not just a vocabulary term
-- If source material was provided and a concept appears in it, list the source filename(s) in sourceRefs
-- If no source material was provided, sourceRefs must be an empty array
-- Cover prerequisites, core ideas, and practical applications within the scope`,
-  "stage3-curriculum": `You are designing a personalised course syllabus for "{{topic}}", scoped to: {{scopeSummary}}.
-
-Selected scope nodes: {{scopeNodes}}
-
-Foundational concepts and learner confidence:
-{{conceptProficiency}}
-
-{{contextSection}}
-
-Design a draft curriculum that adapts to the learner's current knowledge.
-
-Return a JSON object:
-{
-  "curriculum": {
-    "courseId": "{{courseId}}",
-    "title": "Course title",
-    "modules": [
-      {
-        "moduleId": "module-kebab-id",
-        "title": "Module title",
-        "description": "2-3 sentences explaining the module's role in the course.",
-        "lessons": [
-          {
-            "lessonId": "lesson-kebab-id",
-            "title": "Lesson title",
-            "description": "1-2 sentences explaining what the learner will achieve.",
-            "prerequisites": ["earlier-lesson-id"]
-          }
-        ]
-      }
-    ]
-  }
-}
-
-Requirements:
-- Create 3 to 6 modules with 2 to 5 lessons each
-- Order lessons from foundational to advanced within each module
-- Use the learner's proficiency scores:
-  - scores 1-2 mean teach thoroughly
-  - score 3 means concise but still included
-  - scores 4-5 mean condense or omit unless needed as a prerequisite
-- Every lesson must have a unique lessonId in kebab-case
-- prerequisites must only reference lessonIds that appear earlier in the curriculum
-- Keep the syllabus tightly scoped to "{{scopeSummary}}"
-- Prefer user sources when they are strong, but fill gaps with general knowledge when needed`,
-  "stage4-lesson": "// TODO: Stage 4 lesson generation prompt \u2014 to be implemented"
-};
-async function loadPrompt(plugin, name) {
-  const override = plugin.settings.promptOverrides[name];
-  if (override?.trim())
-    return override.trim();
-  return DEFAULTS[name];
-}
-
 // src/plugin.ts
-var DelvePlugin = class extends import_obsidian13.Plugin {
+var DelvePlugin = class extends import_obsidian14.Plugin {
   constructor() {
     super(...arguments);
     __publicField(this, "settings");
@@ -6168,11 +6632,13 @@ var DelvePlugin = class extends import_obsidian13.Plugin {
       }
     } else if (stage === 3) {
       await resumeStage3(this, courseId);
+    } else if (stage === 4) {
+      await runStage4(this, courseId);
     }
   }
   async handleLoadError(error) {
     console.error("Delve: failed to load", error);
-    new import_obsidian13.Notice(`Delve failed to load: ${error.message}`);
+    new import_obsidian14.Notice(`Delve failed to load: ${error.message}`);
     try {
       await this.app.vault.adapter.write(
         "delve-load-error.md",
