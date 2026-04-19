@@ -4,6 +4,7 @@ import type DelvePlugin from '../../main';
 import type { Concept, LikertScore } from '../interfaces';
 import { DIAGNOSTIC_VIEW_TYPE } from '../constants';
 import { confirmDiagnostic } from '../stages/stage2-diagnostic';
+import { runStage3 } from '../stages/stage3-curriculum';
 
 export interface DiagnosticViewState extends Record<string, unknown> {
   courseId: string;
@@ -27,6 +28,7 @@ export class DiagnosticView extends ItemView {
   private ratings = new Map<string, LikertScore>();
   private submitting = false;
   private saved = false;
+  private generatingCurriculum = false;
 
   constructor(leaf: WorkspaceLeaf, private plugin: DelvePlugin) {
     super(leaf);
@@ -47,6 +49,7 @@ export class DiagnosticView extends ItemView {
       Object.entries(this.state.savedProficiencyMap ?? {}) as Array<[string, LikertScore]>
     );
     this.submitting = false;
+    this.generatingCurriculum = false;
     this.saved = this.ratings.size === this.state.concepts.length && this.ratings.size > 0;
     await this.render();
   }
@@ -60,6 +63,7 @@ export class DiagnosticView extends ItemView {
         Object.entries(this.state.savedProficiencyMap ?? {}) as Array<[string, LikertScore]>
       );
       this.saved = this.ratings.size === this.state.concepts.length && this.ratings.size > 0;
+      this.generatingCurriculum = false;
       await this.render();
     }
   }
@@ -96,6 +100,9 @@ export class DiagnosticView extends ItemView {
     const footer = contentEl.createDiv('delve-diagnostic__footer');
     if (this.submitting) {
       footer.createDiv('delve-diagnostic__submitting').textContent = 'Saving assessment…';
+    } else if (this.generatingCurriculum) {
+      footer.createDiv('delve-diagnostic__submitting').textContent =
+        'Designing curriculum draft…';
     } else if (this.saved) {
       const savedBtn = footer.createEl('button', {
         text: 'Assessment saved',
@@ -103,7 +110,7 @@ export class DiagnosticView extends ItemView {
       }) as HTMLButtonElement;
       savedBtn.disabled = true;
       footer.createDiv('delve-diagnostic__submitting').textContent =
-        'Curriculum design is coming in the next stage.';
+        'You can resume curriculum design from the Delve workflow when needed.';
     } else {
       const remaining = total - rated;
       const confirmBtn = footer.createEl('button', {
@@ -134,8 +141,12 @@ export class DiagnosticView extends ItemView {
       btn.createEl('span', { text: String(score), cls: 'delve-diagnostic__likert-num' });
       btn.createEl('span', { text: LIKERT_LABELS[score], cls: 'delve-diagnostic__likert-label' });
       btn.addEventListener('click', () => {
-        if (this.saved) this.saved = false;
         this.ratings.set(concept.id, score);
+        if (this.saved) {
+          this.saved = false;
+          void this.render();
+          return;
+        }
         this.syncCard(card, score);
         this.syncFooter();
         this.syncProgress();
@@ -187,9 +198,12 @@ export class DiagnosticView extends ItemView {
       await confirmDiagnostic(this.plugin, this.state.courseId, map);
       this.submitting = false;
       this.saved = true;
+      this.generatingCurriculum = true;
       await this.render();
+      await runStage3(this.plugin, this.state.courseId);
     } catch {
       this.submitting = false;
+      this.generatingCurriculum = false;
       await this.render();
     }
   }

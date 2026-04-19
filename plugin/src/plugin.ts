@@ -8,15 +8,18 @@ import { TopicInputModal } from './ui/topic-input-modal';
 import { TaxonomyView } from './ui/taxonomy-view';
 import { ConceptsView } from './ui/concepts-view';
 import { DiagnosticView } from './ui/diagnostic-view';
+import { SyllabusEditorView } from './ui/syllabus-editor-view';
 import { ResumeModal } from './ui/resume-modal';
 import {
   TAXONOMY_VIEW_TYPE,
   CONCEPTS_VIEW_TYPE,
   DIAGNOSTIC_VIEW_TYPE,
+  SYLLABUS_VIEW_TYPE,
 } from './constants';
 import { loadPrompt, PromptName } from './prompts';
 import { runStage0 } from './stages/stage0-topic';
 import { runStage1 } from './stages/stage1-concepts';
+import { runStage3 } from './stages/stage3-curriculum';
 
 export default class DelvePlugin extends Plugin {
   settings!: DelveSettings;
@@ -73,6 +76,7 @@ export default class DelvePlugin extends Plugin {
     this.registerView(TAXONOMY_VIEW_TYPE, leaf => new TaxonomyView(leaf, this));
     this.registerView(CONCEPTS_VIEW_TYPE, leaf => new ConceptsView(leaf, this));
     this.registerView(DIAGNOSTIC_VIEW_TYPE, leaf => new DiagnosticView(leaf, this));
+    this.registerView(SYLLABUS_VIEW_TYPE, leaf => new SyllabusEditorView(leaf, this));
   }
 
   private registerCommands(): void {
@@ -159,6 +163,29 @@ export default class DelvePlugin extends Plugin {
           },
         });
         this.app.workspace.revealLeaf(leaf);
+      }
+    } else if (stage === 3) {
+      const stage0 = await this.cacheService.readStage(courseId, 0);
+      const stage3 = await this.cacheService.readStage(courseId, 3);
+      if (stage0 && stage3?.status === 'complete') {
+        const context = await this.contextService.build();
+        const leaf = this.app.workspace.getLeaf(false);
+        await leaf.setViewState({
+          type: SYLLABUS_VIEW_TYPE,
+          active: true,
+          state: {
+            courseId,
+            seedTopic: stage0.seedTopic,
+            curriculum: stage3.curriculum,
+            sourceMode: context.mode,
+            fileCount: context.fileCount,
+            loading: false,
+          },
+        });
+        this.app.workspace.revealLeaf(leaf);
+        await this.lockService.release();
+      } else {
+        await runStage3(this, courseId);
       }
     }
   }

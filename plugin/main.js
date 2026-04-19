@@ -30,7 +30,7 @@ __export(main_exports, {
 module.exports = __toCommonJS(main_exports);
 
 // src/plugin.ts
-var import_obsidian11 = require("obsidian");
+var import_obsidian13 = require("obsidian");
 
 // src/settings.ts
 var import_obsidian = require("obsidian");
@@ -314,6 +314,7 @@ var LOCK_FILE = ".delve.lock";
 var TAXONOMY_VIEW_TYPE = "delve-taxonomy-view";
 var CONCEPTS_VIEW_TYPE = "delve-concepts-view";
 var DIAGNOSTIC_VIEW_TYPE = "delve-diagnostic-view";
+var SYLLABUS_VIEW_TYPE = "delve-syllabus-editor-view";
 
 // src/services/lock.ts
 var LockService = class {
@@ -4478,6 +4479,26 @@ var ConceptSchema = external_exports.object({
 var Stage1ResponseSchema = external_exports.object({
   concepts: external_exports.array(ConceptSchema).min(1)
 });
+var LessonSpecSchema = external_exports.object({
+  lessonId: external_exports.string().min(1),
+  title: external_exports.string().min(1),
+  description: external_exports.string(),
+  prerequisites: external_exports.array(external_exports.string())
+});
+var ModuleSpecSchema = external_exports.object({
+  moduleId: external_exports.string().min(1),
+  title: external_exports.string().min(1),
+  description: external_exports.string(),
+  lessons: external_exports.array(LessonSpecSchema).min(1)
+});
+var CurriculumSchema = external_exports.object({
+  courseId: external_exports.string().min(1),
+  title: external_exports.string().min(1),
+  modules: external_exports.array(ModuleSpecSchema).min(1)
+});
+var Stage3ResponseSchema = external_exports.object({
+  curriculum: CurriculumSchema
+});
 
 // src/stages/stage1-concepts.ts
 var import_obsidian3 = require("obsidian");
@@ -5037,7 +5058,7 @@ async function confirmDiagnostic(plugin, courseId, proficiencyMap) {
   };
   await plugin.cacheService.writeStage(courseId, 2, cache);
   await plugin.lockService.release();
-  new import_obsidian7.Notice("Assessment saved. Curriculum design is coming in the next stage.");
+  new import_obsidian7.Notice("Assessment saved.");
 }
 
 // src/ui/concepts-view.ts
@@ -5163,7 +5184,162 @@ var ConceptsView = class extends import_obsidian8.ItemView {
 };
 
 // src/ui/diagnostic-view.ts
+var import_obsidian10 = require("obsidian");
+
+// src/stages/stage3-curriculum.ts
 var import_obsidian9 = require("obsidian");
+async function runStage3(plugin, courseId) {
+  await plugin.lockService.acquire(courseId, 3);
+  const stage0 = await plugin.cacheService.readStage(courseId, 0);
+  const stage1 = await plugin.cacheService.readStage(courseId, 1);
+  const stage2 = await plugin.cacheService.readStage(courseId, 2);
+  if (!stage0 || !stage1 || !stage2) {
+    await plugin.lockService.release();
+    throw new Error("Stage 0, 1, and 2 must be complete before curriculum design can begin.");
+  }
+  const context = await plugin.contextService.build();
+  const placeholder = emptyCurriculum(courseId, stage0.seedTopic);
+  await plugin.cacheService.writeStage(courseId, 3, {
+    courseId,
+    curriculum: placeholder,
+    status: "pending",
+    startedAt: (/* @__PURE__ */ new Date()).toISOString()
+  });
+  const leaf = plugin.app.workspace.getLeaf(false);
+  await leaf.setViewState({
+    type: SYLLABUS_VIEW_TYPE,
+    active: true,
+    state: {
+      courseId,
+      seedTopic: stage0.seedTopic,
+      curriculum: placeholder,
+      sourceMode: context.mode,
+      fileCount: context.fileCount,
+      loading: true
+    }
+  });
+  plugin.app.workspace.revealLeaf(leaf);
+  try {
+    new import_obsidian9.Notice("Designing curriculum draft\u2026");
+    const promptTemplate = await plugin.loadPrompt("stage3-curriculum");
+    const raw = await plugin.llmService.callJson(
+      promptTemplate,
+      {
+        courseId,
+        topic: stage0.seedTopic,
+        scopeSummary: stage0.scopeSummary,
+        scopeNodes: buildScopeNodes(stage0.taxonomy, stage0.selectedScope) || stage0.scopeSummary,
+        conceptProficiency: buildConceptProficiency(stage1.concepts, stage2.proficiencyMap),
+        contextSection: buildContextSection2(context)
+      }
+    );
+    const validated = await validateAndRepair(
+      raw,
+      Stage3ResponseSchema,
+      plugin.llmService,
+      "Return { curriculum: { courseId, title, modules } } where each module has moduleId/title/description/lessons and each lesson has lessonId/title/description/prerequisites."
+    );
+    const curriculum = normalizeCurriculum(courseId, validated.curriculum);
+    const cache = {
+      courseId,
+      curriculum,
+      status: "complete",
+      startedAt: (/* @__PURE__ */ new Date()).toISOString(),
+      completedAt: (/* @__PURE__ */ new Date()).toISOString()
+    };
+    await plugin.cacheService.writeStage(courseId, 3, cache);
+    await plugin.lockService.release();
+    await leaf.setViewState({
+      type: SYLLABUS_VIEW_TYPE,
+      active: true,
+      state: {
+        courseId,
+        seedTopic: stage0.seedTopic,
+        curriculum,
+        sourceMode: context.mode,
+        fileCount: context.fileCount,
+        loading: false
+      }
+    });
+    plugin.app.workspace.revealLeaf(leaf);
+  } catch (e) {
+    await plugin.lockService.release();
+    new import_obsidian9.Notice(`Delve: curriculum design failed \u2014 ${e.message}`);
+    throw e;
+  }
+}
+function emptyCurriculum(courseId, seedTopic) {
+  return {
+    courseId,
+    title: `${seedTopic} Course`,
+    modules: []
+  };
+}
+function buildContextSection2(context) {
+  if (context.mode === "knowledge-only" || !context.content) {
+    return "No source material has been provided. Build the curriculum from general knowledge only.";
+  }
+  return `The learner has provided ${context.fileCount} source file(s). Prefer this material where it is strong; supplement with general knowledge where it is absent or incomplete.
+
+${context.content}`;
+}
+function buildScopeNodes(taxonomy, selectedScope) {
+  const titles = selectedScope.map((id) => findNodeTitle2(taxonomy, id)).filter((title) => Boolean(title));
+  return titles.join(", ");
+}
+function buildConceptProficiency(concepts, proficiencyMap) {
+  return JSON.stringify(
+    concepts.map((concept) => ({
+      id: concept.id,
+      title: concept.title,
+      description: concept.description,
+      sourceRefs: concept.sourceRefs ?? [],
+      proficiency: proficiencyMap[concept.id] ?? 1
+    })),
+    null,
+    2
+  );
+}
+function findNodeTitle2(taxonomy, id) {
+  for (const node of taxonomy) {
+    if (node.id === id)
+      return node.title;
+    if (node.children?.length) {
+      const child = findNodeTitle2(node.children, id);
+      if (child)
+        return child;
+    }
+  }
+  return void 0;
+}
+function normalizeCurriculum(courseId, curriculum) {
+  return {
+    ...curriculum,
+    courseId,
+    modules: curriculum.modules.map(normalizeModule)
+  };
+}
+function normalizeModule(module2, moduleIndex) {
+  const lessons = module2.lessons.map((lesson, lessonIndex) => normalizeLesson(lesson, lessonIndex));
+  const validLessonIds = new Set(lessons.map((lesson) => lesson.lessonId));
+  return {
+    ...module2,
+    moduleId: module2.moduleId || `module-${moduleIndex + 1}`,
+    lessons: lessons.map((lesson) => ({
+      ...lesson,
+      prerequisites: lesson.prerequisites.filter((prereq) => validLessonIds.has(prereq))
+    }))
+  };
+}
+function normalizeLesson(lesson, lessonIndex) {
+  return {
+    ...lesson,
+    lessonId: lesson.lessonId || `lesson-${lessonIndex + 1}`,
+    prerequisites: lesson.prerequisites ?? []
+  };
+}
+
+// src/ui/diagnostic-view.ts
 var LIKERT_LABELS = {
   1: "New",
   2: "Heard of it",
@@ -5172,7 +5348,7 @@ var LIKERT_LABELS = {
   5: "Expert"
 };
 var LIKERT_SCORES = [1, 2, 3, 4, 5];
-var DiagnosticView = class extends import_obsidian9.ItemView {
+var DiagnosticView = class extends import_obsidian10.ItemView {
   constructor(leaf, plugin) {
     super(leaf);
     this.plugin = plugin;
@@ -5180,6 +5356,7 @@ var DiagnosticView = class extends import_obsidian9.ItemView {
     __publicField(this, "ratings", /* @__PURE__ */ new Map());
     __publicField(this, "submitting", false);
     __publicField(this, "saved", false);
+    __publicField(this, "generatingCurriculum", false);
   }
   getViewType() {
     return DIAGNOSTIC_VIEW_TYPE;
@@ -5196,6 +5373,7 @@ var DiagnosticView = class extends import_obsidian9.ItemView {
       Object.entries(this.state.savedProficiencyMap ?? {})
     );
     this.submitting = false;
+    this.generatingCurriculum = false;
     this.saved = this.ratings.size === this.state.concepts.length && this.ratings.size > 0;
     await this.render();
   }
@@ -5209,6 +5387,7 @@ var DiagnosticView = class extends import_obsidian9.ItemView {
         Object.entries(this.state.savedProficiencyMap ?? {})
       );
       this.saved = this.ratings.size === this.state.concepts.length && this.ratings.size > 0;
+      this.generatingCurriculum = false;
       await this.render();
     }
   }
@@ -5239,13 +5418,15 @@ var DiagnosticView = class extends import_obsidian9.ItemView {
     const footer = contentEl.createDiv("delve-diagnostic__footer");
     if (this.submitting) {
       footer.createDiv("delve-diagnostic__submitting").textContent = "Saving assessment\u2026";
+    } else if (this.generatingCurriculum) {
+      footer.createDiv("delve-diagnostic__submitting").textContent = "Designing curriculum draft\u2026";
     } else if (this.saved) {
       const savedBtn = footer.createEl("button", {
         text: "Assessment saved",
         cls: "mod-cta delve-btn-primary delve-diagnostic__confirm"
       });
       savedBtn.disabled = true;
-      footer.createDiv("delve-diagnostic__submitting").textContent = "Curriculum design is coming in the next stage.";
+      footer.createDiv("delve-diagnostic__submitting").textContent = "You can resume curriculum design from the Delve workflow when needed.";
     } else {
       const remaining = total - rated;
       const confirmBtn = footer.createEl("button", {
@@ -5270,9 +5451,12 @@ var DiagnosticView = class extends import_obsidian9.ItemView {
       btn.createEl("span", { text: String(score), cls: "delve-diagnostic__likert-num" });
       btn.createEl("span", { text: LIKERT_LABELS[score], cls: "delve-diagnostic__likert-label" });
       btn.addEventListener("click", () => {
-        if (this.saved)
-          this.saved = false;
         this.ratings.set(concept.id, score);
+        if (this.saved) {
+          this.saved = false;
+          void this.render();
+          return;
+        }
         this.syncCard(card, score);
         this.syncFooter();
         this.syncProgress();
@@ -5320,9 +5504,12 @@ var DiagnosticView = class extends import_obsidian9.ItemView {
       await confirmDiagnostic(this.plugin, this.state.courseId, map);
       this.submitting = false;
       this.saved = true;
+      this.generatingCurriculum = true;
       await this.render();
+      await runStage3(this.plugin, this.state.courseId);
     } catch {
       this.submitting = false;
+      this.generatingCurriculum = false;
       await this.render();
     }
   }
@@ -5336,8 +5523,245 @@ var DiagnosticView = class extends import_obsidian9.ItemView {
   }
 };
 
+// src/ui/syllabus-editor-view.ts
+var import_obsidian11 = require("obsidian");
+var SyllabusEditorView = class extends import_obsidian11.ItemView {
+  constructor(leaf, plugin) {
+    super(leaf);
+    this.plugin = plugin;
+    __publicField(this, "state", {
+      courseId: "",
+      seedTopic: "",
+      curriculum: {
+        courseId: "",
+        title: "",
+        modules: []
+      },
+      loading: false
+    });
+    __publicField(this, "saving", false);
+    __publicField(this, "dirty", false);
+  }
+  getViewType() {
+    return SYLLABUS_VIEW_TYPE;
+  }
+  getDisplayText() {
+    return this.state.seedTopic ? `Curriculum: ${this.state.seedTopic}` : "Delve: Curriculum Draft";
+  }
+  getIcon() {
+    return "map";
+  }
+  async setState(state, _result) {
+    this.state = state;
+    this.saving = false;
+    this.dirty = false;
+    await this.render();
+  }
+  getState() {
+    return this.state;
+  }
+  async onOpen() {
+    if (this.state.courseId)
+      await this.render();
+  }
+  async onClose() {
+    this.contentEl.empty();
+  }
+  async render() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.addClass("delve-syllabus");
+    const header = contentEl.createDiv("delve-syllabus__header");
+    header.createEl("h2", { text: `Curriculum Draft: ${this.state.seedTopic}` });
+    header.createEl("p", {
+      text: "Review and edit the draft syllabus before lesson generation. Stage 4 is still coming next.",
+      cls: "delve-syllabus__hint"
+    });
+    const meta = header.createDiv("delve-syllabus__meta");
+    if (this.state.sourceMode) {
+      meta.createEl("span", {
+        text: describeSourceMode(this.state.sourceMode, this.state.fileCount ?? 0),
+        cls: `delve-syllabus__mode delve-syllabus__mode--${this.state.sourceMode}`
+      });
+    }
+    meta.createEl("span", {
+      text: `${this.state.curriculum.modules.length} modules`,
+      cls: "delve-syllabus__count"
+    });
+    meta.createEl("span", {
+      text: `${countLessons(this.state.curriculum)} lessons`,
+      cls: "delve-syllabus__count"
+    });
+    const body = contentEl.createDiv("delve-syllabus__body");
+    if (this.state.loading) {
+      body.createDiv("delve-syllabus__loading").textContent = "Designing your curriculum draft\u2026";
+      return;
+    }
+    const titleField = body.createDiv("delve-syllabus__field");
+    titleField.createEl("label", {
+      text: "Course title",
+      cls: "delve-syllabus__label"
+    });
+    const courseTitleInput = titleField.createEl("input", {
+      type: "text",
+      cls: "delve-syllabus__input",
+      value: this.state.curriculum.title
+    });
+    courseTitleInput.addEventListener("input", () => {
+      this.state.curriculum.title = courseTitleInput.value;
+      this.markDirty();
+    });
+    const modules = body.createDiv("delve-syllabus__modules");
+    this.state.curriculum.modules.forEach((module2, moduleIndex) => {
+      const moduleCard = modules.createDiv("delve-syllabus__module");
+      const moduleHeader = moduleCard.createDiv("delve-syllabus__module-header");
+      moduleHeader.createEl("span", {
+        text: `Module ${moduleIndex + 1}`,
+        cls: "delve-syllabus__module-index"
+      });
+      this.renderField(
+        moduleCard,
+        "Module title",
+        module2.title,
+        (value) => {
+          this.state.curriculum.modules[moduleIndex].title = value;
+          this.markDirty();
+        }
+      );
+      this.renderTextarea(
+        moduleCard,
+        "Module description",
+        module2.description,
+        (value) => {
+          this.state.curriculum.modules[moduleIndex].description = value;
+          this.markDirty();
+        }
+      );
+      const lessons = moduleCard.createDiv("delve-syllabus__lessons");
+      module2.lessons.forEach((lesson, lessonIndex) => {
+        const lessonCard = lessons.createDiv("delve-syllabus__lesson");
+        lessonCard.createEl("div", {
+          text: `Lesson ${lessonIndex + 1}`,
+          cls: "delve-syllabus__lesson-index"
+        });
+        this.renderField(
+          lessonCard,
+          "Lesson title",
+          lesson.title,
+          (value) => {
+            this.state.curriculum.modules[moduleIndex].lessons[lessonIndex].title = value;
+            this.markDirty();
+          }
+        );
+        this.renderTextarea(
+          lessonCard,
+          "Lesson description",
+          lesson.description,
+          (value) => {
+            this.state.curriculum.modules[moduleIndex].lessons[lessonIndex].description = value;
+            this.markDirty();
+          }
+        );
+        const prereqs = lessonCard.createDiv("delve-syllabus__prereqs");
+        prereqs.createEl("span", {
+          text: lesson.prerequisites.length ? `Prerequisites: ${lesson.prerequisites.join(", ")}` : "Prerequisites: none",
+          cls: "delve-syllabus__prereqs-text"
+        });
+      });
+    });
+    const footer = contentEl.createDiv("delve-syllabus__footer");
+    const status = footer.createDiv("delve-syllabus__status");
+    if (this.saving) {
+      status.textContent = "Saving syllabus draft\u2026";
+    } else if (this.dirty) {
+      status.textContent = "You have unsaved curriculum edits.";
+    } else {
+      status.textContent = "Draft saved locally in plugin data.";
+    }
+    const actions = footer.createDiv("delve-syllabus__actions");
+    const regenerateBtn = actions.createEl("button", {
+      text: "Regenerate draft",
+      cls: "delve-taxonomy__action-btn"
+    });
+    regenerateBtn.disabled = this.saving;
+    regenerateBtn.addEventListener("click", () => void this.handleRegenerate());
+    const saveBtn = actions.createEl("button", {
+      text: this.saving ? "Saving\u2026" : "Save draft",
+      cls: "delve-taxonomy__action-btn delve-syllabus__save"
+    });
+    saveBtn.disabled = this.saving || !this.dirty;
+    saveBtn.addEventListener("click", () => void this.handleSaveDraft());
+    const finalizeBtn = actions.createEl("button", {
+      text: "Generate lessons (Stage 4 soon)",
+      cls: "mod-cta delve-btn-primary delve-syllabus__finalize"
+    });
+    finalizeBtn.disabled = true;
+  }
+  renderField(parent, label, value, onInput) {
+    const field = parent.createDiv("delve-syllabus__field");
+    field.createEl("label", { text: label, cls: "delve-syllabus__label" });
+    const input = field.createEl("input", {
+      type: "text",
+      cls: "delve-syllabus__input",
+      value
+    });
+    input.addEventListener("input", () => onInput(input.value));
+  }
+  renderTextarea(parent, label, value, onInput) {
+    const field = parent.createDiv("delve-syllabus__field");
+    field.createEl("label", { text: label, cls: "delve-syllabus__label" });
+    const textarea = field.createEl("textarea", { cls: "delve-syllabus__textarea" });
+    textarea.rows = 3;
+    textarea.value = value;
+    textarea.addEventListener("input", () => onInput(textarea.value));
+  }
+  async handleSaveDraft() {
+    this.saving = true;
+    await this.render();
+    try {
+      await this.plugin.cacheService.writeStage(this.state.courseId, 3, {
+        courseId: this.state.courseId,
+        curriculum: this.state.curriculum,
+        status: "complete",
+        completedAt: (/* @__PURE__ */ new Date()).toISOString()
+      });
+      this.dirty = false;
+      new import_obsidian11.Notice("Curriculum draft saved.");
+    } finally {
+      this.saving = false;
+      await this.render();
+    }
+  }
+  async handleRegenerate() {
+    try {
+      await runStage3(this.plugin, this.state.courseId);
+    } catch (e) {
+      new import_obsidian11.Notice(`Could not regenerate curriculum: ${e.message}`);
+    }
+  }
+  markDirty() {
+    this.dirty = true;
+    const status = this.contentEl.querySelector(".delve-syllabus__status");
+    if (status && !this.saving) {
+      status.textContent = "You have unsaved curriculum edits.";
+    }
+    const saveBtn = this.contentEl.querySelector(".delve-syllabus__save");
+    if (saveBtn)
+      saveBtn.disabled = false;
+  }
+};
+function countLessons(curriculum) {
+  return curriculum.modules.reduce((total, module2) => total + module2.lessons.length, 0);
+}
+function describeSourceMode(mode, fileCount) {
+  if (mode === "knowledge-only")
+    return "Knowledge-only";
+  const label = mode === "grounded" ? "Grounded" : "Augmented";
+  return `${label} \u2014 ${fileCount} source file${fileCount === 1 ? "" : "s"}`;
+}
+
 // src/ui/resume-modal.ts
-var import_obsidian10 = require("obsidian");
+var import_obsidian12 = require("obsidian");
 var STAGE_NAMES = {
   0: "Topic Explorer",
   1: "Concept Extraction",
@@ -5345,7 +5769,7 @@ var STAGE_NAMES = {
   3: "Curriculum Design",
   4: "Content Generation"
 };
-var ResumeModal = class extends import_obsidian10.Modal {
+var ResumeModal = class extends import_obsidian12.Modal {
   constructor(app, lock) {
     super(app);
     this.lock = lock;
@@ -5367,7 +5791,7 @@ var ResumeModal = class extends import_obsidian10.Modal {
       text: `Course: ${this.lock.courseId}`,
       cls: "setting-item-description"
     });
-    new import_obsidian10.Setting(contentEl).addButton(
+    new import_obsidian12.Setting(contentEl).addButton(
       (btn) => btn.setButtonText("Resume").setCta().onClick(() => {
         this.close();
         this.resolve("resume");
@@ -5454,7 +5878,51 @@ Requirements:
 - If source material was provided and a concept appears in it, list the source filename(s) in sourceRefs
 - If no source material was provided, sourceRefs must be an empty array
 - Cover prerequisites, core ideas, and practical applications within the scope`,
-  "stage3-curriculum": "// TODO: Stage 3 curriculum design prompt \u2014 to be implemented",
+  "stage3-curriculum": `You are designing a personalised course syllabus for "{{topic}}", scoped to: {{scopeSummary}}.
+
+Selected scope nodes: {{scopeNodes}}
+
+Foundational concepts and learner confidence:
+{{conceptProficiency}}
+
+{{contextSection}}
+
+Design a draft curriculum that adapts to the learner's current knowledge.
+
+Return a JSON object:
+{
+  "curriculum": {
+    "courseId": "{{courseId}}",
+    "title": "Course title",
+    "modules": [
+      {
+        "moduleId": "module-kebab-id",
+        "title": "Module title",
+        "description": "2-3 sentences explaining the module's role in the course.",
+        "lessons": [
+          {
+            "lessonId": "lesson-kebab-id",
+            "title": "Lesson title",
+            "description": "1-2 sentences explaining what the learner will achieve.",
+            "prerequisites": ["earlier-lesson-id"]
+          }
+        ]
+      }
+    ]
+  }
+}
+
+Requirements:
+- Create 3 to 6 modules with 2 to 5 lessons each
+- Order lessons from foundational to advanced within each module
+- Use the learner's proficiency scores:
+  - scores 1-2 mean teach thoroughly
+  - score 3 means concise but still included
+  - scores 4-5 mean condense or omit unless needed as a prerequisite
+- Every lesson must have a unique lessonId in kebab-case
+- prerequisites must only reference lessonIds that appear earlier in the curriculum
+- Keep the syllabus tightly scoped to "{{scopeSummary}}"
+- Prefer user sources when they are strong, but fill gaps with general knowledge when needed`,
   "stage4-lesson": "// TODO: Stage 4 lesson generation prompt \u2014 to be implemented"
 };
 async function loadPrompt(plugin, name) {
@@ -5465,7 +5933,7 @@ async function loadPrompt(plugin, name) {
 }
 
 // src/plugin.ts
-var DelvePlugin = class extends import_obsidian11.Plugin {
+var DelvePlugin = class extends import_obsidian13.Plugin {
   constructor() {
     super(...arguments);
     __publicField(this, "settings");
@@ -5517,6 +5985,7 @@ var DelvePlugin = class extends import_obsidian11.Plugin {
     this.registerView(TAXONOMY_VIEW_TYPE, (leaf) => new TaxonomyView(leaf, this));
     this.registerView(CONCEPTS_VIEW_TYPE, (leaf) => new ConceptsView(leaf, this));
     this.registerView(DIAGNOSTIC_VIEW_TYPE, (leaf) => new DiagnosticView(leaf, this));
+    this.registerView(SYLLABUS_VIEW_TYPE, (leaf) => new SyllabusEditorView(leaf, this));
   }
   registerCommands() {
     this.addCommand({
@@ -5597,11 +6066,34 @@ var DelvePlugin = class extends import_obsidian11.Plugin {
         });
         this.app.workspace.revealLeaf(leaf);
       }
+    } else if (stage === 3) {
+      const stage0 = await this.cacheService.readStage(courseId, 0);
+      const stage3 = await this.cacheService.readStage(courseId, 3);
+      if (stage0 && stage3?.status === "complete") {
+        const context = await this.contextService.build();
+        const leaf = this.app.workspace.getLeaf(false);
+        await leaf.setViewState({
+          type: SYLLABUS_VIEW_TYPE,
+          active: true,
+          state: {
+            courseId,
+            seedTopic: stage0.seedTopic,
+            curriculum: stage3.curriculum,
+            sourceMode: context.mode,
+            fileCount: context.fileCount,
+            loading: false
+          }
+        });
+        this.app.workspace.revealLeaf(leaf);
+        await this.lockService.release();
+      } else {
+        await runStage3(this, courseId);
+      }
     }
   }
   async handleLoadError(error) {
     console.error("Delve: failed to load", error);
-    new import_obsidian11.Notice(`Delve failed to load: ${error.message}`);
+    new import_obsidian13.Notice(`Delve failed to load: ${error.message}`);
     try {
       await this.app.vault.adapter.write(
         "delve-load-error.md",

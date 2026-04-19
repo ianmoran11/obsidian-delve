@@ -52,6 +52,13 @@ export function makeMockPlugin() {
       callText: async () => '',
       listModels: async () => [] as string[],
     },
+    contextService: {
+      build: async () => ({
+        mode: 'knowledge-only' as const,
+        fileCount: 0,
+        content: '',
+      }),
+    },
     cacheService: {
       readStage: async () => undefined,
       writeStage: async () => {},

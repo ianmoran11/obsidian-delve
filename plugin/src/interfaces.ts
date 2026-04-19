@@ -65,7 +65,9 @@ export interface Curriculum {
 export interface Stage3Cache {
   courseId: CourseId;
   curriculum: Curriculum;
-  completedAt: string;
+  status?: 'pending' | 'complete';
+  startedAt?: string;
+  completedAt?: string;
 }
 
 export interface GenerationProgress {

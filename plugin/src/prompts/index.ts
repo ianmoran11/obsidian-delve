@@ -82,7 +82,51 @@ Requirements:
 - If no source material was provided, sourceRefs must be an empty array
 - Cover prerequisites, core ideas, and practical applications within the scope`,
 
-  'stage3-curriculum': '// TODO: Stage 3 curriculum design prompt — to be implemented',
+  'stage3-curriculum': `You are designing a personalised course syllabus for "{{topic}}", scoped to: {{scopeSummary}}.
+
+Selected scope nodes: {{scopeNodes}}
+
+Foundational concepts and learner confidence:
+{{conceptProficiency}}
+
+{{contextSection}}
+
+Design a draft curriculum that adapts to the learner's current knowledge.
+
+Return a JSON object:
+{
+  "curriculum": {
+    "courseId": "{{courseId}}",
+    "title": "Course title",
+    "modules": [
+      {
+        "moduleId": "module-kebab-id",
+        "title": "Module title",
+        "description": "2-3 sentences explaining the module's role in the course.",
+        "lessons": [
+          {
+            "lessonId": "lesson-kebab-id",
+            "title": "Lesson title",
+            "description": "1-2 sentences explaining what the learner will achieve.",
+            "prerequisites": ["earlier-lesson-id"]
+          }
+        ]
+      }
+    ]
+  }
+}
+
+Requirements:
+- Create 3 to 6 modules with 2 to 5 lessons each
+- Order lessons from foundational to advanced within each module
+- Use the learner's proficiency scores:
+  - scores 1-2 mean teach thoroughly
+  - score 3 means concise but still included
+  - scores 4-5 mean condense or omit unless needed as a prerequisite
+- Every lesson must have a unique lessonId in kebab-case
+- prerequisites must only reference lessonIds that appear earlier in the curriculum
+- Keep the syllabus tightly scoped to "{{scopeSummary}}"
+- Prefer user sources when they are strong, but fill gaps with general knowledge when needed`,
   'stage4-lesson': '// TODO: Stage 4 lesson generation prompt — to be implemented',
 };
 

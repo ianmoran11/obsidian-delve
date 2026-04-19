@@ -40,5 +40,5 @@ export async function confirmDiagnostic(
   };
   await plugin.cacheService.writeStage(courseId, 2, cache);
   await plugin.lockService.release();
-  new Notice('Assessment saved. Curriculum design is coming in the next stage.');
+  new Notice('Assessment saved.');
 }

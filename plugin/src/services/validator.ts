@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { LlmService } from './openrouter';
-import type { TaxonomyNode } from '../interfaces';
+import type { Curriculum, LessonSpec, ModuleSpec, TaxonomyNode } from '../interfaces';
 
 export async function validateAndRepair<T>(
   data: unknown,
@@ -65,4 +65,28 @@ export const ConceptSchema = z.object({
 
 export const Stage1ResponseSchema = z.object({
   concepts: z.array(ConceptSchema).min(1),
+});
+
+export const LessonSpecSchema: z.ZodType<LessonSpec> = z.object({
+  lessonId: z.string().min(1),
+  title: z.string().min(1),
+  description: z.string(),
+  prerequisites: z.array(z.string()),
+});
+
+export const ModuleSpecSchema: z.ZodType<ModuleSpec> = z.object({
+  moduleId: z.string().min(1),
+  title: z.string().min(1),
+  description: z.string(),
+  lessons: z.array(LessonSpecSchema).min(1),
+});
+
+export const CurriculumSchema: z.ZodType<Curriculum> = z.object({
+  courseId: z.string().min(1),
+  title: z.string().min(1),
+  modules: z.array(ModuleSpecSchema).min(1),
+});
+
+export const Stage3ResponseSchema = z.object({
+  curriculum: CurriculumSchema,
 });
