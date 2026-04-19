@@ -1,0 +1,175 @@
+/* Delve plugin styles */
+
+/* ── Layout ── */
+.delve-layout--cover { font-size: 14px; }
+.delve-layout--phone { font-size: 15px; }
+.delve-layout--desktop { font-size: 16px; }
+
+/* ── Shared buttons ── */
+.delve-btn-primary {
+  min-height: 44px;
+  padding: 10px 20px;
+  border-radius: 6px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+/* ── Topic input modal ── */
+.delve-topic-input .modal-content { padding: 24px; }
+.delve-topic-input__field { width: 100%; min-height: 44px; font-size: 1em; }
+.delve-topic-input__actions { display: flex; justify-content: flex-end; margin-top: 16px; }
+.delve-subtitle { color: var(--text-muted); margin-bottom: 16px; }
+
+/* ── Taxonomy view ── */
+.delve-taxonomy {
+  display: flex; flex-direction: column; height: 100%; overflow: hidden;
+}
+.delve-taxonomy__header {
+  padding: 16px 16px 8px;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+.delve-taxonomy__hint { color: var(--text-muted); font-size: 0.9em; margin: 4px 0 8px; }
+.delve-taxonomy__tree { flex: 1; overflow-y: auto; padding: 8px 16px; }
+.delve-taxonomy__item { margin: 2px 0; }
+.delve-taxonomy__item--depth-0 { margin-top: 8px; }
+.delve-taxonomy__item--depth-1 { padding-left: 20px; }
+.delve-taxonomy__item--depth-2 { padding-left: 40px; }
+.delve-taxonomy__row { display: flex; align-items: flex-start; gap: 8px; min-height: 44px; padding: 4px 0; }
+.delve-taxonomy__checkbox { margin-top: 4px; min-width: 18px; min-height: 18px; cursor: pointer; }
+.delve-taxonomy__label { display: flex; flex-direction: column; cursor: pointer; flex: 1; }
+.delve-taxonomy__title { font-weight: 500; line-height: 1.4; }
+.delve-taxonomy__desc { color: var(--text-muted); font-size: 0.85em; line-height: 1.3; }
+.delve-taxonomy__children { margin-left: 4px; }
+.delve-taxonomy__footer {
+  padding: 12px 16px;
+  border-top: 1px solid var(--background-modifier-border);
+  background: var(--background-primary);
+}
+.delve-taxonomy__confirm { width: 100%; justify-content: center; }
+
+/* ── Node action buttons (shared) ── */
+.delve-taxonomy__node-actions { display: flex; gap: 4px; margin-left: auto; flex-shrink: 0; align-items: center; }
+.delve-taxonomy__action-btn {
+  padding: 3px 8px; min-height: 32px; font-size: 0.78em;
+  border-radius: 4px; border: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary); color: var(--text-muted);
+  cursor: pointer; white-space: nowrap; transition: background 0.15s, color 0.15s;
+}
+.delve-taxonomy__action-btn:hover { background: var(--background-modifier-hover); color: var(--text-normal); }
+.delve-taxonomy__action-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.delve-taxonomy__node-loading { font-size: 0.8em; color: var(--text-muted); font-style: italic; margin-left: auto; padding: 4px 0; }
+.delve-taxonomy__suggest-btn { width: 100%; margin-top: 6px; font-size: 0.85em; min-height: 36px; justify-content: center; }
+.delve-taxonomy__suggest-loading { color: var(--text-muted); font-style: italic; font-size: 0.85em; margin-top: 6px; padding: 4px 0; }
+
+/* ── Concepts view ── */
+.delve-concepts {
+  display: flex; flex-direction: column; height: 100%; overflow: hidden;
+}
+.delve-concepts__header {
+  padding: 16px 16px 10px;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+.delve-concepts__meta {
+  display: flex; gap: 10px; align-items: center; margin-top: 6px; flex-wrap: wrap;
+}
+.delve-concepts__mode {
+  font-size: 0.78em; padding: 2px 8px; border-radius: 12px;
+  border: 1px solid var(--background-modifier-border);
+}
+.delve-concepts__mode--knowledge-only { color: var(--text-muted); }
+.delve-concepts__mode--grounded { color: var(--color-green, #4caf50); }
+.delve-concepts__mode--augmented { color: var(--color-yellow, #ff9800); }
+.delve-concepts__count { font-size: 0.82em; color: var(--text-muted); }
+.delve-concepts__list {
+  flex: 1; overflow-y: auto; padding: 12px 16px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.delve-concepts__card {
+  padding: 12px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background: var(--background-secondary);
+}
+.delve-concepts__card-header {
+  display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px;
+}
+.delve-concepts__card-index {
+  font-size: 0.75em; color: var(--text-faint);
+  min-width: 18px; font-variant-numeric: tabular-nums;
+}
+.delve-concepts__card-title { font-size: 1em; font-weight: 600; margin: 0; }
+.delve-concepts__card-desc { font-size: 0.88em; color: var(--text-muted); margin: 0; line-height: 1.5; }
+.delve-concepts__card-refs { margin-top: 6px; font-size: 0.78em; }
+.delve-concepts__card-refs-label { color: var(--text-faint); }
+.delve-concepts__card-refs-list { color: var(--text-accent); }
+.delve-concepts__footer {
+  padding: 12px 16px;
+  border-top: 1px solid var(--background-modifier-border);
+  background: var(--background-primary);
+  display: flex; gap: 8px; align-items: center;
+}
+.delve-concepts__proceed { margin-left: auto; }
+.delve-concepts__regen-loading { color: var(--text-muted); font-style: italic; font-size: 0.85em; }
+
+/* ── Diagnostic view ── */
+.delve-diagnostic {
+  display: flex; flex-direction: column; height: 100%; overflow: hidden;
+}
+.delve-diagnostic__header {
+  padding: 16px 16px 10px;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+.delve-diagnostic__hint { color: var(--text-muted); font-size: 0.9em; margin: 4px 0 6px; }
+.delve-diagnostic__progress { margin-top: 2px; }
+.delve-diagnostic__progress--partial { font-size: 0.82em; color: var(--text-muted); }
+.delve-diagnostic__progress--complete { font-size: 0.82em; color: var(--color-green, #4caf50); font-weight: 600; }
+.delve-diagnostic__list {
+  flex: 1; overflow-y: auto; padding: 12px 16px;
+  display: flex; flex-direction: column; gap: 12px;
+}
+.delve-diagnostic__card {
+  padding: 14px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background: var(--background-secondary);
+}
+.delve-diagnostic__card-title { font-size: 1em; font-weight: 600; margin: 0 0 4px; }
+.delve-diagnostic__card-desc { font-size: 0.88em; color: var(--text-muted); margin: 0 0 12px; line-height: 1.5; }
+.delve-diagnostic__scale {
+  display: flex; gap: 4px;
+}
+.delve-diagnostic__likert-btn {
+  flex: 1; min-width: 0;
+  display: flex; flex-direction: column; align-items: center;
+  gap: 3px; padding: 8px 4px; min-height: 56px;
+  border-radius: 6px; border: 1px solid var(--background-modifier-border);
+  background: var(--background-primary); cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.delve-diagnostic__likert-btn:hover {
+  background: var(--background-modifier-hover);
+  border-color: var(--interactive-accent);
+}
+.delve-diagnostic__likert-btn--selected {
+  background: var(--interactive-accent) !important;
+  border-color: var(--interactive-accent) !important;
+}
+.delve-diagnostic__likert-btn--selected .delve-diagnostic__likert-num,
+.delve-diagnostic__likert-btn--selected .delve-diagnostic__likert-label {
+  color: var(--text-on-accent) !important;
+}
+.delve-diagnostic__likert-num {
+  font-size: 1.1em; font-weight: 700; line-height: 1;
+}
+.delve-diagnostic__likert-label {
+  font-size: 0.68em; text-align: center; color: var(--text-muted);
+  line-height: 1.2; overflow: hidden;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+}
+.delve-diagnostic__footer {
+  padding: 12px 16px;
+  border-top: 1px solid var(--background-modifier-border);
+  background: var(--background-primary);
+}
+.delve-diagnostic__confirm { width: 100%; justify-content: center; }
+.delve-diagnostic__submitting { color: var(--text-muted); font-style: italic; font-size: 0.85em; }
