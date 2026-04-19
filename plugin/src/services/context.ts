@@ -37,7 +37,9 @@ export class ContextService {
     }
 
     return {
-      mode: 'grounded',
+      // Current UX does not let the learner force strict source-only grounding,
+      // so source-backed runs are treated as augmented by default.
+      mode: 'augmented',
       content: parts.join('\n\n'),
       fileCount: files.length,
     };

@@ -1,13 +1,15 @@
 import { ItemView, WorkspaceLeaf } from 'obsidian';
+import type { ViewStateResult } from 'obsidian';
 import type DelvePlugin from '../../main';
 import type { Concept, LikertScore } from '../interfaces';
 import { DIAGNOSTIC_VIEW_TYPE } from '../constants';
 import { confirmDiagnostic } from '../stages/stage2-diagnostic';
 
-export interface DiagnosticViewState {
+export interface DiagnosticViewState extends Record<string, unknown> {
   courseId: string;
   seedTopic: string;
   concepts: Concept[];
+  savedProficiencyMap?: Record<string, LikertScore>;
 }
 
 const LIKERT_LABELS: Record<LikertScore, string> = {
@@ -24,6 +26,7 @@ export class DiagnosticView extends ItemView {
   private state: DiagnosticViewState = { courseId: '', seedTopic: '', concepts: [] };
   private ratings = new Map<string, LikertScore>();
   private submitting = false;
+  private saved = false;
 
   constructor(leaf: WorkspaceLeaf, private plugin: DelvePlugin) {
     super(leaf);
@@ -36,19 +39,29 @@ export class DiagnosticView extends ItemView {
   getIcon(): string { return 'gauge'; }
 
   async setState(
-    state: DiagnosticViewState,
-    _result: Record<string, unknown>
+    state: unknown,
+    _result: ViewStateResult
   ): Promise<void> {
-    this.state = state;
-    this.ratings = new Map();
+    this.state = await this.hydrateState(state as DiagnosticViewState);
+    this.ratings = new Map(
+      Object.entries(this.state.savedProficiencyMap ?? {}) as Array<[string, LikertScore]>
+    );
     this.submitting = false;
+    this.saved = this.ratings.size === this.state.concepts.length && this.ratings.size > 0;
     await this.render();
   }
 
-  getState(): DiagnosticViewState { return this.state; }
+  getState(): Record<string, unknown> { return this.state; }
 
   async onOpen(): Promise<void> {
-    if (this.state.concepts.length > 0) await this.render();
+    if (this.state.concepts.length > 0) {
+      this.state = await this.hydrateState(this.state);
+      this.ratings = new Map(
+        Object.entries(this.state.savedProficiencyMap ?? {}) as Array<[string, LikertScore]>
+      );
+      this.saved = this.ratings.size === this.state.concepts.length && this.ratings.size > 0;
+      await this.render();
+    }
   }
 
   async onClose(): Promise<void> { this.contentEl.empty(); }
@@ -83,6 +96,14 @@ export class DiagnosticView extends ItemView {
     const footer = contentEl.createDiv('delve-diagnostic__footer');
     if (this.submitting) {
       footer.createDiv('delve-diagnostic__submitting').textContent = 'Saving assessment…';
+    } else if (this.saved) {
+      const savedBtn = footer.createEl('button', {
+        text: 'Assessment saved',
+        cls: 'mod-cta delve-btn-primary delve-diagnostic__confirm',
+      }) as HTMLButtonElement;
+      savedBtn.disabled = true;
+      footer.createDiv('delve-diagnostic__submitting').textContent =
+        'Curriculum design is coming in the next stage.';
     } else {
       const remaining = total - rated;
       const confirmBtn = footer.createEl('button', {
@@ -113,6 +134,7 @@ export class DiagnosticView extends ItemView {
       btn.createEl('span', { text: String(score), cls: 'delve-diagnostic__likert-num' });
       btn.createEl('span', { text: LIKERT_LABELS[score], cls: 'delve-diagnostic__likert-label' });
       btn.addEventListener('click', () => {
+        if (this.saved) this.saved = false;
         this.ratings.set(concept.id, score);
         this.syncCard(card, score);
         this.syncFooter();
@@ -131,6 +153,7 @@ export class DiagnosticView extends ItemView {
   }
 
   private syncFooter(): void {
+    if (this.saved) return;
     const remaining = this.state.concepts.length - this.ratings.size;
     const btn = this.contentEl.querySelector(
       '.delve-diagnostic__confirm'
@@ -162,9 +185,19 @@ export class DiagnosticView extends ItemView {
     try {
       const map = Object.fromEntries(this.ratings) as Record<string, LikertScore>;
       await confirmDiagnostic(this.plugin, this.state.courseId, map);
+      this.submitting = false;
+      this.saved = true;
+      await this.render();
     } catch {
       this.submitting = false;
       await this.render();
     }
+  }
+
+  private async hydrateState(state: DiagnosticViewState): Promise<DiagnosticViewState> {
+    if (state.savedProficiencyMap || !state.courseId) return state;
+    const stage2 = await this.plugin.cacheService.readStage(state.courseId, 2);
+    if (!stage2?.proficiencyMap) return state;
+    return { ...state, savedProficiencyMap: stage2.proficiencyMap };
   }
 }

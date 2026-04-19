@@ -1,4 +1,5 @@
 import { ItemView, Notice, WorkspaceLeaf } from 'obsidian';
+import type { ViewStateResult } from 'obsidian';
 import type DelvePlugin from '../../main';
 import type { Concept } from '../interfaces';
 import type { SourceMode } from '../services/context';
@@ -6,7 +7,7 @@ import { CONCEPTS_VIEW_TYPE } from '../constants';
 import { runStage1 } from '../stages/stage1-concepts';
 import { runStage2 } from '../stages/stage2-diagnostic';
 
-export interface ConceptsViewState {
+export interface ConceptsViewState extends Record<string, unknown> {
   courseId: string;
   seedTopic: string;
   concepts: Concept[];
@@ -35,15 +36,15 @@ export class ConceptsView extends ItemView {
   getIcon(): string { return 'list'; }
 
   async setState(
-    state: ConceptsViewState,
-    _result: Record<string, unknown>
+    state: unknown,
+    _result: ViewStateResult
   ): Promise<void> {
-    this.state = state;
+    this.state = state as ConceptsViewState;
     this.regenerating = false;
     await this.render();
   }
 
-  getState(): ConceptsViewState { return this.state; }
+  getState(): Record<string, unknown> { return this.state; }
 
   async onOpen(): Promise<void> {
     if (this.state.concepts.length > 0) await this.render();

@@ -14,7 +14,9 @@ export interface Stage0Cache {
   taxonomy: TaxonomyNode[];
   selectedScope: string[];
   scopeSummary: string;
-  completedAt: string;
+  status?: 'pending' | 'complete';
+  startedAt?: string;
+  completedAt?: string;
 }
 
 export interface Concept {
@@ -27,7 +29,9 @@ export interface Concept {
 export interface Stage1Cache {
   courseId: CourseId;
   concepts: Concept[];
-  completedAt: string;
+  status?: 'pending' | 'complete';
+  startedAt?: string;
+  completedAt?: string;
 }
 
 export type LikertScore = 1 | 2 | 3 | 4 | 5;

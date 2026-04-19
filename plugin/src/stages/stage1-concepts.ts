@@ -10,6 +10,12 @@ export async function runStage1(
   courseId: string
 ): Promise<void> {
   await plugin.lockService.acquire(courseId, 1);
+  await plugin.cacheService.writeStage(courseId, 1, {
+    courseId,
+    concepts: [],
+    status: 'pending',
+    startedAt: new Date().toISOString(),
+  });
 
   try {
     new Notice('Extracting concepts…');
@@ -45,6 +51,7 @@ export async function runStage1(
     const cache: Stage1Cache = {
       courseId,
       concepts: validated.concepts,
+      status: 'complete',
       completedAt: new Date().toISOString(),
     };
 

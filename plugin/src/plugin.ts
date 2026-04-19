@@ -15,6 +15,8 @@ import {
   DIAGNOSTIC_VIEW_TYPE,
 } from './constants';
 import { loadPrompt, PromptName } from './prompts';
+import { runStage0 } from './stages/stage0-topic';
+import { runStage1 } from './stages/stage1-concepts';
 
 export default class DelvePlugin extends Plugin {
   settings!: DelveSettings;
@@ -105,7 +107,9 @@ export default class DelvePlugin extends Plugin {
   ): Promise<void> {
     if (stage === 0) {
       const cached = await this.cacheService.readStage(courseId, 0);
-      if (cached?.taxonomy?.length) {
+      if (!cached) return;
+
+      if (cached.taxonomy?.length) {
         const leaf = this.app.workspace.getLeaf(false);
         await leaf.setViewState({
           type: TAXONOMY_VIEW_TYPE,
@@ -113,6 +117,8 @@ export default class DelvePlugin extends Plugin {
           state: { courseId, seedTopic: cached.seedTopic, taxonomy: cached.taxonomy },
         });
         this.app.workspace.revealLeaf(leaf);
+      } else if (cached.seedTopic) {
+        await runStage0(this, cached.seedTopic, courseId);
       }
     } else if (stage === 1) {
       const cached = await this.cacheService.readStage(courseId, 1);
@@ -133,10 +139,13 @@ export default class DelvePlugin extends Plugin {
         });
         this.app.workspace.revealLeaf(leaf);
         await this.lockService.release();
+      } else if (stage0?.status === 'complete') {
+        await runStage1(this, courseId);
       }
     } else if (stage === 2) {
       const stage1 = await this.cacheService.readStage(courseId, 1);
       const stage0 = await this.cacheService.readStage(courseId, 0);
+      const stage2 = await this.cacheService.readStage(courseId, 2);
       if (stage1?.concepts?.length && stage0) {
         const leaf = this.app.workspace.getLeaf(false);
         await leaf.setViewState({
@@ -146,6 +155,7 @@ export default class DelvePlugin extends Plugin {
             courseId,
             seedTopic: stage0.seedTopic,
             concepts: stage1.concepts,
+            savedProficiencyMap: stage2?.proficiencyMap,
           },
         });
         this.app.workspace.revealLeaf(leaf);

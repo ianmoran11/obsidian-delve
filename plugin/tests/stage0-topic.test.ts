@@ -2,6 +2,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { confirmScope } from '../src/stages/stage0-topic';
 import { makeMockPlugin, makeTaxonomyNode } from './helpers';
 
+vi.mock('../src/stages/stage1-concepts', () => ({
+  runStage1: vi.fn().mockResolvedValue(undefined),
+}));
+
 describe('stage0: confirmScope', () => {
   let plugin: ReturnType<typeof makeMockPlugin>;
 
@@ -81,5 +85,7 @@ interface Stage0Cache {
   taxonomy: unknown[];
   selectedScope: string[];
   scopeSummary: string;
-  completedAt: string;
+  status?: 'pending' | 'complete';
+  startedAt?: string;
+  completedAt?: string;
 }

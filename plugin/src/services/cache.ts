@@ -24,7 +24,11 @@ export class CacheService {
 
   async readAll(): Promise<PluginData> {
     const raw = (await this.plugin.loadData()) as PluginData | null;
-    return raw ?? { courses: {}, meta: {} };
+    return {
+      settings: raw?.settings,
+      courses: raw?.courses ?? {},
+      meta: raw?.meta ?? {},
+    };
   }
 
   async readCourse(courseId: CourseId): Promise<StageCache> {

@@ -17,6 +17,15 @@ export async function runStage0(
   courseId: string
 ): Promise<void> {
   await plugin.lockService.acquire(courseId, 0);
+  await plugin.cacheService.writeStage(courseId, 0, {
+    courseId,
+    seedTopic,
+    taxonomy: [],
+    selectedScope: [],
+    scopeSummary: '',
+    status: 'pending',
+    startedAt: new Date().toISOString(),
+  });
 
   try {
     new Notice('Generating topic taxonomy…');
@@ -33,6 +42,16 @@ export async function runStage0(
       plugin.llmService,
       'Fix the taxonomy JSON so every node has id (kebab-case string), title, and description.'
     );
+
+    await plugin.cacheService.writeStage(courseId, 0, {
+      courseId,
+      seedTopic,
+      taxonomy: validated.taxonomy,
+      selectedScope: [],
+      scopeSummary: '',
+      status: 'pending',
+      startedAt: new Date().toISOString(),
+    });
 
     const leaf = plugin.app.workspace.getLeaf(false);
     await leaf.setViewState({
@@ -118,7 +137,12 @@ export async function confirmScope(
     .join(', ');
 
   const cache: Stage0Cache = {
-    courseId, seedTopic, taxonomy, selectedScope, scopeSummary,
+    courseId,
+    seedTopic,
+    taxonomy,
+    selectedScope,
+    scopeSummary,
+    status: 'complete',
     completedAt: new Date().toISOString(),
   };
 

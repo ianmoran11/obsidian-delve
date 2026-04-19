@@ -1,4 +1,5 @@
 import { ItemView, Notice, WorkspaceLeaf } from 'obsidian';
+import type { ViewStateResult } from 'obsidian';
 import type DelvePlugin from '../../main';
 import type { TaxonomyNode } from '../interfaces';
 import { TAXONOMY_VIEW_TYPE } from '../constants';
@@ -12,7 +13,7 @@ import {
   appendTopLevel,
 } from '../stages/stage0-topic';
 
-export interface TaxonomyViewState {
+export interface TaxonomyViewState extends Record<string, unknown> {
   courseId: string;
   seedTopic: string;
   taxonomy: TaxonomyNode[];
@@ -24,6 +25,7 @@ export class TaxonomyView extends ItemView {
   private selected = new Set<string>();
   private loadingNodes = new Set<string>();
   private suggestingRelated = false;
+  private confirming = false;
 
   constructor(leaf: WorkspaceLeaf, private plugin: DelvePlugin) {
     super(leaf);
@@ -35,13 +37,14 @@ export class TaxonomyView extends ItemView {
   }
   getIcon(): string { return 'map'; }
 
-  async setState(state: TaxonomyViewState, _result: Record<string, unknown>): Promise<void> {
-    this.state = state;
-    this.taxonomy = deepClone(state.taxonomy);
+  async setState(state: unknown, _result: ViewStateResult): Promise<void> {
+    const nextState = state as TaxonomyViewState;
+    this.state = nextState;
+    this.taxonomy = deepClone(nextState.taxonomy);
     await this.render();
   }
 
-  getState(): TaxonomyViewState {
+  getState(): Record<string, unknown> {
     return { ...this.state, taxonomy: this.taxonomy };
   }
 
@@ -74,6 +77,7 @@ export class TaxonomyView extends ItemView {
         cls: 'delve-taxonomy__action-btn delve-taxonomy__suggest-btn',
         title: 'Ask the model to suggest additional top-level topics related to this subject',
       });
+      suggestBtn.disabled = this.confirming;
       suggestBtn.addEventListener('click', () => void this.handleSuggestRelated());
     }
 
@@ -90,6 +94,11 @@ export class TaxonomyView extends ItemView {
     confirmBtn.disabled = true;
     confirmBtn.addEventListener('click', () => void this.handleConfirm());
     this.syncConfirmButton(confirmBtn);
+
+    if (this.confirming) {
+      footer.createDiv('delve-taxonomy__confirm-loading').textContent =
+        'Saving scope and extracting concepts…';
+    }
   }
 
   private renderNode(parent: HTMLElement, node: TaxonomyNode, depth: number): void {
@@ -131,6 +140,7 @@ export class TaxonomyView extends ItemView {
         cls: 'delve-taxonomy__action-btn',
         title: 'Replace this topic with more specific alternatives at the same level',
       });
+      splitBtn.disabled = this.confirming;
       splitBtn.addEventListener('click', e => {
         e.stopPropagation();
         void this.handleDisaggregate(node);
@@ -141,6 +151,7 @@ export class TaxonomyView extends ItemView {
         cls: 'delve-taxonomy__action-btn',
         title: 'Add detailed subtopics below this item',
       });
+      expandBtn.disabled = this.confirming;
       expandBtn.addEventListener('click', e => {
         e.stopPropagation();
         void this.handleExpand(node);
@@ -172,9 +183,13 @@ export class TaxonomyView extends ItemView {
 
   private syncConfirmButton(btn: HTMLButtonElement): void {
     const count = this.selected.size;
-    btn.disabled = count === 0;
+    btn.disabled = count === 0 || this.confirming;
     btn.textContent =
-      count > 0 ? `Confirm Scope (${count} selected)` : 'Select topics to continue';
+      this.confirming
+        ? 'Preparing concepts…'
+        : count > 0
+          ? `Confirm Scope (${count} selected)`
+          : 'Select topics to continue';
   }
 
   private async handleDisaggregate(node: TaxonomyNode): Promise<void> {
@@ -231,13 +246,21 @@ export class TaxonomyView extends ItemView {
   }
 
   private async handleConfirm(): Promise<void> {
-    await confirmScope(
-      this.plugin,
-      this.state.courseId,
-      this.state.seedTopic,
-      this.taxonomy,
-      Array.from(this.selected)
-    );
+    this.confirming = true;
+    await this.render();
+    try {
+      await confirmScope(
+        this.plugin,
+        this.state.courseId,
+        this.state.seedTopic,
+        this.taxonomy,
+        Array.from(this.selected)
+      );
+    } catch (e) {
+      this.confirming = false;
+      await this.render();
+      new Notice(`Could not continue to concept extraction: ${(e as Error).message}`);
+    }
   }
 }
 

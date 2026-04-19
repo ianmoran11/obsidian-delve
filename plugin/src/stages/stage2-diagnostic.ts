@@ -10,6 +10,7 @@ export async function runStage2(
   const stage1 = await plugin.cacheService.readStage(courseId, 1);
   if (!stage1) throw new Error('Stage 1 not complete — run concept extraction first.');
   const stage0 = await plugin.cacheService.readStage(courseId, 0);
+  const stage2 = await plugin.cacheService.readStage(courseId, 2);
 
   await plugin.lockService.acquire(courseId, 2);
 
@@ -21,6 +22,7 @@ export async function runStage2(
       courseId,
       seedTopic: stage0?.seedTopic ?? '',
       concepts: stage1.concepts,
+      savedProficiencyMap: stage2?.proficiencyMap,
     },
   });
   plugin.app.workspace.revealLeaf(leaf);

@@ -20,7 +20,7 @@ export class OpenRouterService implements LlmService {
   async callJson<T>(prompt: string, variables: Record<string, string>): Promise<T> {
     const rendered = renderPrompt(prompt, variables);
     const text = await this.callWithRetry(rendered, 'json_object');
-    return JSON.parse(text) as T;
+    return parseJsonResponse<T>(text);
   }
 
   async callText(prompt: string, variables: Record<string, string>): Promise<string> {
@@ -104,6 +104,80 @@ export class OpenRouterService implements LlmService {
 
 function renderPrompt(template: string, vars: Record<string, string>): string {
   return template.replace(/\{\{(\w+)\}\}/g, (_, k: string) => vars[k] ?? `{{${k}}}`);
+}
+
+function parseJsonResponse<T>(text: string): T {
+  const candidates = [
+    text.trim(),
+    stripCodeFence(text).trim(),
+    extractJsonObject(text)?.trim(),
+    extractJsonArray(text)?.trim(),
+  ].filter((candidate): candidate is string => Boolean(candidate));
+
+  for (const candidate of candidates) {
+    try {
+      return JSON.parse(candidate) as T;
+    } catch {
+      continue;
+    }
+  }
+
+  throw new Error(`Model returned non-JSON output: ${text.slice(0, 200)}`);
+}
+
+function stripCodeFence(text: string): string {
+  return text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+}
+
+function extractJsonObject(text: string): string | null {
+  return extractBalanced(text, '{', '}');
+}
+
+function extractJsonArray(text: string): string | null {
+  return extractBalanced(text, '[', ']');
+}
+
+function extractBalanced(
+  text: string,
+  openChar: string,
+  closeChar: string
+): string | null {
+  const start = text.indexOf(openChar);
+  if (start === -1) return null;
+
+  let depth = 0;
+  let inString = false;
+  let escaping = false;
+
+  for (let i = start; i < text.length; i++) {
+    const char = text[i];
+
+    if (escaping) {
+      escaping = false;
+      continue;
+    }
+
+    if (char === '\\') {
+      escaping = true;
+      continue;
+    }
+
+    if (char === '"') {
+      inString = !inString;
+      continue;
+    }
+
+    if (inString) continue;
+
+    if (char === openChar) depth++;
+    if (char === closeChar) depth--;
+
+    if (depth === 0) {
+      return text.slice(start, i + 1);
+    }
+  }
+
+  return null;
 }
 
 function sleep(ms: number): Promise<void> {
