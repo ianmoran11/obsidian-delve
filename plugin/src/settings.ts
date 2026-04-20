@@ -10,7 +10,7 @@ export interface DelveSettings {
 
 export const DEFAULT_SETTINGS: DelveSettings = {
   openRouterApiKey: '',
-  defaultModel: 'anthropic/claude-3-5-sonnet',
+  defaultModel: 'google/gemini-3-flash-preview',
   promptOverrides: {},
 };
 

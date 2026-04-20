@@ -9,6 +9,10 @@ export async function runStage1(
   plugin: DelvePlugin,
   courseId: string
 ): Promise<void> {
+  if (!plugin.settings.openRouterApiKey) {
+    throw new Error('Add your OpenRouter API key in Delve settings before extracting concepts.');
+  }
+
   await plugin.lockService.acquire(courseId, 1);
   await plugin.cacheService.writeStage(courseId, 1, {
     courseId,

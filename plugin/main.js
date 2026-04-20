@@ -51,7 +51,7 @@ var DIAGNOSTIC_VIEW_TYPE = "delve-diagnostic-view";
 var SYLLABUS_VIEW_TYPE = "delve-syllabus-editor-view";
 
 // src/prompts/index.ts
-var DEFAULT_MODEL = "anthropic/claude-3-5-sonnet";
+var DEFAULT_MODEL = "google/gemini-3-flash-preview";
 var CONFIG_NOTE_PATH = `${VAULT_PATHS.SETTINGS}/Delve Config.md`;
 var PROMPTS = {
   "stage0-taxonomy": {
@@ -270,12 +270,8 @@ async function loadPrompt(plugin, name) {
   };
 }
 async function loadRuntimeConfig(plugin) {
-  await ensurePromptSettings(plugin);
-  const raw = await plugin.app.vault.adapter.read(CONFIG_NOTE_PATH);
-  const parsed = parseNote(raw);
-  return {
-    defaultModel: normalizeScalar(parsed.frontmatter.defaultModel) || plugin.settings.defaultModel || DEFAULT_MODEL
-  };
+  await ensureRuntimeConfig(plugin);
+  return loadRuntimeConfigWithoutEnsure(plugin);
 }
 function getPromptPath(name) {
   return `${VAULT_PATHS.PROMPTS}/${PROMPTS[name].filename}`;
@@ -368,7 +364,7 @@ function escapeYamlValue(value) {
 // src/settings.ts
 var DEFAULT_SETTINGS = {
   openRouterApiKey: "",
-  defaultModel: "anthropic/claude-3-5-sonnet",
+  defaultModel: "google/gemini-3-flash-preview",
   promptOverrides: {}
 };
 var DelveSettingsTab = class extends import_obsidian.PluginSettingTab {
@@ -4835,6 +4831,9 @@ function normalizeDifficulty(value) {
 // src/stages/stage1-concepts.ts
 var import_obsidian3 = require("obsidian");
 async function runStage1(plugin, courseId) {
+  if (!plugin.settings.openRouterApiKey) {
+    throw new Error("Add your OpenRouter API key in Delve settings before extracting concepts.");
+  }
   await plugin.lockService.acquire(courseId, 1);
   await plugin.cacheService.writeStage(courseId, 1, {
     courseId,
@@ -5203,6 +5202,9 @@ var TaxonomyView = class extends import_obsidian6.ItemView {
     confirmBtn.disabled = true;
     confirmBtn.addEventListener("click", () => void this.handleConfirm());
     this.syncConfirmButton(confirmBtn);
+    if (!this.plugin.settings.openRouterApiKey) {
+      footer.createDiv("delve-taxonomy__confirm-loading").textContent = "Add your OpenRouter API key in Delve settings before continuing.";
+    }
     if (this.confirming) {
       footer.createDiv("delve-taxonomy__confirm-loading").textContent = "Saving scope and extracting concepts\u2026";
     }
@@ -5284,8 +5286,9 @@ var TaxonomyView = class extends import_obsidian6.ItemView {
   }
   syncConfirmButton(btn) {
     const count = this.selected.size;
-    btn.disabled = count === 0 || this.confirming;
-    btn.textContent = this.confirming ? "Preparing concepts\u2026" : count > 0 ? `Confirm Scope (${count} selected)` : "Select topics to continue";
+    const missingApiKey = !this.plugin.settings.openRouterApiKey;
+    btn.disabled = count === 0 || this.confirming || missingApiKey;
+    btn.textContent = this.confirming ? "Preparing concepts\u2026" : missingApiKey ? "Add API key in settings to continue" : count > 0 ? `Confirm Scope (${count} selected)` : "Select topics to continue";
   }
   async handleDisaggregate(node) {
     this.loadingNodes.add(node.id);
@@ -5338,6 +5341,10 @@ var TaxonomyView = class extends import_obsidian6.ItemView {
     }
   }
   async handleConfirm() {
+    if (!this.plugin.settings.openRouterApiKey) {
+      new import_obsidian6.Notice("Add your OpenRouter API key in Delve settings before continuing.");
+      return;
+    }
     this.confirming = true;
     await this.render();
     try {

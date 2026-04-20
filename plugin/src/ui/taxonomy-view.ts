@@ -95,6 +95,11 @@ export class TaxonomyView extends ItemView {
     confirmBtn.addEventListener('click', () => void this.handleConfirm());
     this.syncConfirmButton(confirmBtn);
 
+    if (!this.plugin.settings.openRouterApiKey) {
+      footer.createDiv('delve-taxonomy__confirm-loading').textContent =
+        'Add your OpenRouter API key in Delve settings before continuing.';
+    }
+
     if (this.confirming) {
       footer.createDiv('delve-taxonomy__confirm-loading').textContent =
         'Saving scope and extracting concepts…';
@@ -183,10 +188,13 @@ export class TaxonomyView extends ItemView {
 
   private syncConfirmButton(btn: HTMLButtonElement): void {
     const count = this.selected.size;
-    btn.disabled = count === 0 || this.confirming;
+    const missingApiKey = !this.plugin.settings.openRouterApiKey;
+    btn.disabled = count === 0 || this.confirming || missingApiKey;
     btn.textContent =
       this.confirming
         ? 'Preparing concepts…'
+        : missingApiKey
+          ? 'Add API key in settings to continue'
         : count > 0
           ? `Confirm Scope (${count} selected)`
           : 'Select topics to continue';
@@ -246,6 +254,11 @@ export class TaxonomyView extends ItemView {
   }
 
   private async handleConfirm(): Promise<void> {
+    if (!this.plugin.settings.openRouterApiKey) {
+      new Notice('Add your OpenRouter API key in Delve settings before continuing.');
+      return;
+    }
+
     this.confirming = true;
     await this.render();
     try {

@@ -29,7 +29,7 @@ interface RuntimeConfig {
   defaultModel: string;
 }
 
-const DEFAULT_MODEL = 'anthropic/claude-3-5-sonnet';
+const DEFAULT_MODEL = 'google/gemini-3-flash-preview';
 const CONFIG_NOTE_PATH = `${VAULT_PATHS.SETTINGS}/Delve Config.md`;
 
 const PROMPTS: Record<PromptName, PromptDefinition> = {
@@ -258,12 +258,8 @@ export async function loadPrompt(
 }
 
 export async function loadRuntimeConfig(plugin: DelvePlugin): Promise<RuntimeConfig> {
-  await ensurePromptSettings(plugin);
-  const raw = await plugin.app.vault.adapter.read(CONFIG_NOTE_PATH);
-  const parsed = parseNote(raw);
-  return {
-    defaultModel: normalizeScalar(parsed.frontmatter.defaultModel) || plugin.settings.defaultModel || DEFAULT_MODEL,
-  };
+  await ensureRuntimeConfig(plugin);
+  return loadRuntimeConfigWithoutEnsure(plugin);
 }
 
 export function getPromptPath(name: PromptName): string {
