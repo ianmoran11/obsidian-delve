@@ -76,6 +76,11 @@ export interface GenerationProgress {
   currentLesson?: string;
 }
 
+export interface GeneratedLessonSummary {
+  title: string;
+  summary: string;
+}
+
 export interface LessonDraft {
   title: string;
   summary: string;
@@ -96,6 +101,8 @@ export interface Stage4Cache {
   courseId: CourseId;
   progress: GenerationProgress;
   outputs?: Stage4OutputPaths;
+  completedLessonIds?: string[];
+  generatedLessonSummaries?: Record<string, GeneratedLessonSummary>;
   status?: 'pending' | 'complete';
   startedAt?: string;
   completedAt?: string;

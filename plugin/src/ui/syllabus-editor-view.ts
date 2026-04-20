@@ -1,7 +1,7 @@
 import { ItemView, Notice, WorkspaceLeaf } from 'obsidian';
 import type { ViewStateResult } from 'obsidian';
 import type DelvePlugin from '../../main';
-import type { Curriculum } from '../interfaces';
+import type { Curriculum, Stage0Cache, Stage3Cache, Stage4Cache } from '../interfaces';
 import type { SourceMode } from '../services/context';
 import { SYLLABUS_VIEW_TYPE } from '../constants';
 import { runStage3 } from '../stages/stage3-curriculum';
@@ -49,7 +49,7 @@ export class SyllabusEditorView extends ItemView {
     state: unknown,
     _result: ViewStateResult
   ): Promise<void> {
-    this.state = state as SyllabusEditorViewState;
+    this.state = this.normalizeState(state as SyllabusEditorViewState);
     this.saving = false;
     this.dirty = false;
     this.generatingLessons = false;
@@ -59,7 +59,8 @@ export class SyllabusEditorView extends ItemView {
   getState(): Record<string, unknown> { return this.state; }
 
   async onOpen(): Promise<void> {
-    if (this.state.courseId) await this.render();
+    this.state = this.normalizeState(this.state);
+    if (this.getCourseId()) await this.render();
   }
 
   async onClose(): Promise<void> {
@@ -70,11 +71,19 @@ export class SyllabusEditorView extends ItemView {
     const { contentEl } = this;
     contentEl.empty();
     contentEl.addClass('delve-syllabus');
+    const courseId = this.getCourseId();
+    const stage4 = courseId
+      ? (await this.plugin.cacheService.readStage(courseId, 4)) as Stage4Cache | undefined
+      : undefined;
+    const lessonCount = countLessons(this.state.curriculum);
+    const completedLessons = stage4?.progress.completedLessons ?? 0;
+    const remainingLessons = Math.max(lessonCount - completedLessons, 0);
+    const generationComplete = stage4?.status === 'complete' && lessonCount > 0;
 
     const header = contentEl.createDiv('delve-syllabus__header');
     header.createEl('h2', { text: `Curriculum Draft: ${this.state.seedTopic}` });
     header.createEl('p', {
-      text: 'Review and edit the draft syllabus before lesson generation. Stage 4 is still coming next.',
+      text: 'Review and edit the draft syllabus, then generate lessons one at a time as you are ready to study them.',
       cls: 'delve-syllabus__hint',
     });
 
@@ -90,9 +99,17 @@ export class SyllabusEditorView extends ItemView {
       cls: 'delve-syllabus__count',
     });
     meta.createEl('span', {
-      text: `${countLessons(this.state.curriculum)} lessons`,
+      text: `${lessonCount} lessons`,
       cls: 'delve-syllabus__count',
     });
+    if (lessonCount > 0) {
+      meta.createEl('span', {
+        text: generationComplete
+          ? 'All lessons generated'
+          : `${completedLessons}/${lessonCount} generated`,
+        cls: 'delve-syllabus__count',
+      });
+    }
 
     const body = contentEl.createDiv('delve-syllabus__body');
     if (this.state.loading) {
@@ -187,8 +204,16 @@ export class SyllabusEditorView extends ItemView {
     const status = footer.createDiv('delve-syllabus__status');
     if (this.saving) {
       status.textContent = 'Saving syllabus draft…';
+    } else if (this.generatingLessons) {
+      status.textContent = remainingLessons > 0
+        ? `Generating lesson ${completedLessons + 1} of ${lessonCount}…`
+        : 'Wrapping up lesson generation…';
     } else if (this.dirty) {
       status.textContent = 'You have unsaved curriculum edits.';
+    } else if (generationComplete) {
+      status.textContent = 'All lessons have been generated into the vault.';
+    } else if (completedLessons > 0) {
+      status.textContent = `${completedLessons} lesson${completedLessons === 1 ? '' : 's'} generated. You can keep going whenever you’re ready.`;
     } else {
       status.textContent = 'Draft saved locally in plugin data.';
     }
@@ -209,10 +234,10 @@ export class SyllabusEditorView extends ItemView {
     saveBtn.addEventListener('click', () => void this.handleSaveDraft());
 
     const finalizeBtn = actions.createEl('button', {
-      text: this.generatingLessons ? 'Generating lessons…' : 'Generate lessons',
+      text: getGenerateButtonLabel(this.generatingLessons, generationComplete, completedLessons),
       cls: 'mod-cta delve-btn-primary delve-syllabus__finalize',
     }) as HTMLButtonElement;
-    finalizeBtn.disabled = this.saving || this.generatingLessons || Boolean(this.state.loading);
+    finalizeBtn.disabled = this.saving || this.generatingLessons || Boolean(this.state.loading) || generationComplete;
     finalizeBtn.addEventListener('click', () => void this.handleGenerateLessons());
   }
 
@@ -247,15 +272,15 @@ export class SyllabusEditorView extends ItemView {
   }
 
   private async handleSaveDraft(): Promise<void> {
+    const courseId = await this.ensureCourseId();
+    if (!courseId) {
+      new Notice('This curriculum tab is missing its course id. Reopen it from the assessment view.');
+      return;
+    }
     this.saving = true;
     await this.render();
     try {
-      await this.plugin.cacheService.writeStage(this.state.courseId, 3, {
-        courseId: this.state.courseId,
-        curriculum: this.state.curriculum,
-        status: 'complete',
-        completedAt: new Date().toISOString(),
-      });
+      await this.writeCurrentStage3(courseId);
       this.dirty = false;
       new Notice('Curriculum draft saved.');
     } finally {
@@ -265,28 +290,32 @@ export class SyllabusEditorView extends ItemView {
   }
 
   private async handleRegenerate(): Promise<void> {
+    const courseId = this.getCourseId();
+    if (!courseId) {
+      new Notice('This curriculum tab is missing its course id. Reopen it from the assessment view.');
+      return;
+    }
     try {
-      await runStage3(this.plugin, this.state.courseId);
+      await runStage3(this.plugin, courseId);
     } catch (e) {
       new Notice(`Could not regenerate curriculum: ${(e as Error).message}`);
     }
   }
 
   private async handleGenerateLessons(): Promise<void> {
+    const courseId = await this.ensureCourseId();
+    if (!courseId) {
+      new Notice('This curriculum tab is missing its course id. Reopen it from the assessment view.');
+      return;
+    }
     if (this.generatingLessons) return;
     this.generatingLessons = true;
     await this.render();
     try {
-      if (this.dirty) {
-        await this.plugin.cacheService.writeStage(this.state.courseId, 3, {
-          courseId: this.state.courseId,
-          curriculum: this.state.curriculum,
-          status: 'complete',
-          completedAt: new Date().toISOString(),
-        });
-        this.dirty = false;
-      }
-      await runStage4(this.plugin, this.state.courseId);
+      await this.writeCurrentStage3(courseId);
+      await this.ensureStage0SeedTopic(courseId);
+      this.dirty = false;
+      await runStage4(this.plugin, courseId);
     } catch (e) {
       new Notice(`Could not generate lessons: ${(e as Error).message}`);
     } finally {
@@ -304,6 +333,68 @@ export class SyllabusEditorView extends ItemView {
     const saveBtn = this.contentEl.querySelector('.delve-syllabus__save') as HTMLButtonElement | null;
     if (saveBtn) saveBtn.disabled = false;
   }
+
+  private getCourseId(): string {
+    return this.state.courseId || this.state.curriculum.courseId || '';
+  }
+
+  private async ensureCourseId(): Promise<string> {
+    const existingCourseId = this.getCourseId();
+    if (existingCourseId) {
+      this.state.courseId = existingCourseId;
+      this.state.curriculum.courseId = existingCourseId;
+      return existingCourseId;
+    }
+
+    const recoveredCourseId = generateRecoveredCourseId(this.state.seedTopic);
+    this.state.courseId = recoveredCourseId;
+    this.state.curriculum.courseId = recoveredCourseId;
+    return recoveredCourseId;
+  }
+
+  private async writeCurrentStage3(courseId: string): Promise<void> {
+    const cache: Stage3Cache = {
+      courseId,
+      curriculum: {
+        ...this.state.curriculum,
+        courseId,
+      },
+      status: 'complete',
+      completedAt: new Date().toISOString(),
+    };
+    await this.plugin.cacheService.writeStage(courseId, 3, cache);
+  }
+
+  private async ensureStage0SeedTopic(courseId: string): Promise<void> {
+    const existingStage0 = await this.plugin.cacheService.readStage(courseId, 0);
+    if (existingStage0) return;
+
+    const seedTopic = this.state.seedTopic.trim();
+    if (!seedTopic) return;
+
+    const cache: Stage0Cache = {
+      courseId,
+      seedTopic,
+      taxonomy: [],
+      selectedScope: [],
+      scopeSummary: seedTopic,
+      status: 'complete',
+      completedAt: new Date().toISOString(),
+    };
+    await this.plugin.cacheService.writeStage(courseId, 0, cache);
+  }
+
+  private normalizeState(state: SyllabusEditorViewState): SyllabusEditorViewState {
+    const courseId = state.courseId || state.curriculum?.courseId || '';
+    return {
+      ...state,
+      courseId,
+      curriculum: {
+        ...state.curriculum,
+        courseId,
+      },
+    };
+  }
 }
 
 function countLessons(curriculum: Curriculum): number {
@@ -314,4 +405,24 @@ function describeSourceMode(mode: SourceMode, fileCount: number): string {
   if (mode === 'knowledge-only') return 'Knowledge-only';
   const label = mode === 'grounded' ? 'Grounded' : 'Augmented';
   return `${label} — ${fileCount} source file${fileCount === 1 ? '' : 's'}`;
+}
+
+function getGenerateButtonLabel(
+  generatingLessons: boolean,
+  generationComplete: boolean,
+  completedLessons: number
+): string {
+  if (generatingLessons) return 'Generating next lesson…';
+  if (generationComplete) return 'All lessons generated';
+  if (completedLessons > 0) return 'Generate next lesson';
+  return 'Generate first lesson';
+}
+
+function generateRecoveredCourseId(seedTopic: string): string {
+  const topicSlug = seedTopic
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    || 'course';
+  return `recovered-${topicSlug}-${Date.now().toString(36)}`;
 }

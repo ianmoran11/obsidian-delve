@@ -2,6 +2,7 @@ import { Notice } from 'obsidian';
 import type DelvePlugin from '../../main';
 import type {
   Curriculum,
+  GeneratedLessonSummary,
   LessonDraft,
   LessonSpec,
   ModuleSpec,
@@ -24,99 +25,135 @@ export async function runStage4(
 ): Promise<void> {
   await plugin.lockService.acquire(courseId, 4);
 
-  const stage0 = await plugin.cacheService.readStage(courseId, 0);
-  const stage3 = await plugin.cacheService.readStage(courseId, 3);
-  if (!stage0 || !stage3?.curriculum) {
-    await plugin.lockService.release();
-    throw new Error('Stage 0 and Stage 3 must be complete before lesson generation can begin.');
-  }
-
-  const curriculum = stage3.curriculum;
-  const context = await plugin.contextService.build();
-  const outputs = buildOutputPaths(curriculum);
-  await ensureFolderTree(plugin, outputs);
-
-  const totalLessons = curriculum.modules.reduce((sum, module) => sum + module.lessons.length, 0);
-  await plugin.cacheService.writeStage(courseId, 4, {
-    courseId,
-    progress: {
-      totalLessons,
-      completedLessons: 0,
-    },
-    outputs,
-    status: 'pending',
-    startedAt: new Date().toISOString(),
-  });
-
   try {
-    new Notice('Generating lesson notes…');
+    const stage0 = await plugin.cacheService.readStage(courseId, 0);
+    const stage3 = await plugin.cacheService.readStage(courseId, 3);
+    if (!stage0 || !stage3?.curriculum) {
+      throw new Error('Stage 0 and Stage 3 must be complete before lesson generation can begin.');
+    }
 
-    const promptTemplate = await loadPrompt(plugin, 'stage4-lesson');
+    const curriculum = stage3.curriculum;
+    const context = await plugin.contextService.build();
+    const outputs = buildOutputPaths(curriculum);
+    await ensureFolderTree(plugin, outputs);
+
     const lessonOrder = flattenLessons(curriculum);
-    const lessonDrafts = new Map<string, LessonDraft>();
+    const totalLessons = lessonOrder.length;
+    const existingCache = (await plugin.cacheService.readStage(courseId, 4)) as Stage4Cache | undefined;
+    const startedAt = existingCache?.startedAt ?? new Date().toISOString();
+    const completedLessonIds = normalizeCompletedLessonIds(existingCache, outputs);
+    const generatedLessonSummaries = existingCache?.generatedLessonSummaries ?? {};
+    const nextLesson = lessonOrder.find(item => !completedLessonIds.includes(item.lesson.lessonId));
 
-    for (let index = 0; index < lessonOrder.length; index++) {
-      const item = lessonOrder[index];
-      const { module, lesson } = item;
-      await plugin.cacheService.writeStage(courseId, 4, {
+    if (!nextLesson) {
+      const completeCache: Stage4Cache = {
         courseId,
         progress: {
           totalLessons,
-          completedLessons: index,
-          currentLesson: lesson.title,
+          completedLessons: totalLessons,
         },
         outputs,
-        status: 'pending',
-        startedAt: new Date().toISOString(),
-      });
-
-      const raw = await plugin.llmService.callJson<{ lesson: LessonDraft }>(
-        promptTemplate,
-        {
-          topic: stage0.seedTopic,
-          courseTitle: curriculum.title,
-          moduleTitle: module.title,
-          lessonTitle: lesson.title,
-          lessonDescription: lesson.description,
-          prerequisiteSummary: describePrerequisites(lesson, lessonOrder, lessonDrafts),
-          generationMode: context.mode,
-          contextSection: buildContextSection(context),
-        }
-      );
-
-      const validated = await validateAndRepair(
-        raw,
-        Stage4LessonResponseSchema,
-        plugin.llmService,
-        'Return { lesson: { title, summary, difficulty, bodyMarkdown, sourceRefs } } with non-empty Markdown in bodyMarkdown.'
-      );
-      lessonDrafts.set(lesson.lessonId, {
-        ...validated.lesson,
-        difficulty: validated.lesson.difficulty as LessonDraft['difficulty'],
-        sourceRefs: validated.lesson.sourceRefs ?? [],
-      });
+        completedLessonIds,
+        generatedLessonSummaries,
+        status: 'complete',
+        startedAt,
+        completedAt: existingCache?.completedAt ?? new Date().toISOString(),
+      };
+      await plugin.cacheService.writeStage(courseId, 4, completeCache);
+      new Notice('All lesson notes have already been generated.');
+      return;
     }
 
-    await writeCourseOutputs(plugin, curriculum, outputs, lessonDrafts, context.mode);
+    await plugin.cacheService.writeStage(courseId, 4, {
+      courseId,
+      progress: {
+        totalLessons,
+        completedLessons: completedLessonIds.length,
+        currentLesson: nextLesson.lesson.title,
+      },
+      outputs,
+      completedLessonIds,
+      generatedLessonSummaries,
+      status: 'pending',
+      startedAt,
+    });
 
+    new Notice(`Generating lesson ${completedLessonIds.length + 1} of ${totalLessons}: ${nextLesson.lesson.title}`);
+
+    const promptTemplate = await loadPrompt(plugin, 'stage4-lesson');
+    const raw = await plugin.llmService.callJson<{ lesson: LessonDraft }>(
+      promptTemplate,
+      {
+        topic: stage0.seedTopic,
+        courseTitle: curriculum.title,
+        moduleTitle: nextLesson.module.title,
+        lessonTitle: nextLesson.lesson.title,
+        lessonDescription: nextLesson.lesson.description,
+        prerequisiteSummary: describePrerequisites(nextLesson.lesson, lessonOrder, generatedLessonSummaries),
+        generationMode: context.mode,
+        contextSection: buildContextSection(context),
+      }
+    );
+
+    const validated = await validateAndRepair(
+      raw,
+      Stage4LessonResponseSchema,
+      plugin.llmService,
+      'Return { lesson: { title, summary, difficulty, bodyMarkdown, sourceRefs } } with non-empty Markdown in bodyMarkdown.'
+    );
+    const draft: LessonDraft = {
+      ...validated.lesson,
+      difficulty: validated.lesson.difficulty as LessonDraft['difficulty'],
+      sourceRefs: validated.lesson.sourceRefs ?? [],
+    };
+
+    await writeLessonOutput(
+      plugin,
+      curriculum,
+      outputs,
+      nextLesson.module,
+      nextLesson.lesson,
+      draft,
+      context.mode
+    );
+
+    const updatedCompletedLessonIds = [...completedLessonIds, nextLesson.lesson.lessonId];
+    const updatedGeneratedLessonSummaries = {
+      ...generatedLessonSummaries,
+      [nextLesson.lesson.lessonId]: {
+        title: draft.title,
+        summary: draft.summary,
+      },
+    };
+
+    await writeSupportingOutputs(plugin, curriculum, outputs);
+
+    const isComplete = updatedCompletedLessonIds.length === totalLessons;
     const cache: Stage4Cache = {
       courseId,
       progress: {
         totalLessons,
-        completedLessons: totalLessons,
+        completedLessons: updatedCompletedLessonIds.length,
       },
       outputs,
-      status: 'complete',
-      startedAt: new Date().toISOString(),
-      completedAt: new Date().toISOString(),
+      completedLessonIds: updatedCompletedLessonIds,
+      generatedLessonSummaries: updatedGeneratedLessonSummaries,
+      status: isComplete ? 'complete' : 'pending',
+      startedAt,
+      completedAt: isComplete ? new Date().toISOString() : undefined,
     };
     await plugin.cacheService.writeStage(courseId, 4, cache);
-    await plugin.lockService.release();
-    new Notice(`Generated ${totalLessons} lessons in ${outputs.rootDir}.`);
+
+    new Notice(
+      isComplete
+        ? `Generated all ${totalLessons} lessons in ${outputs.rootDir}.`
+        : `Generated ${draft.title}. ${totalLessons - updatedCompletedLessonIds.length} lesson${totalLessons - updatedCompletedLessonIds.length === 1 ? '' : 's'} remaining.`
+    );
   } catch (error) {
-    await plugin.lockService.release();
     new Notice(`Delve: lesson generation failed — ${(error as Error).message}`);
     throw error;
+  } finally {
+    await plugin.lockService.release();
   }
 }
 
@@ -166,17 +203,21 @@ async function ensureFolder(plugin: DelvePlugin, path: string): Promise<void> {
   await plugin.app.vault.adapter.mkdir?.(path);
 }
 
-async function writeCourseOutputs(
+function normalizeCompletedLessonIds(
+  cache: Stage4Cache | undefined,
+  outputs: Stage4OutputPaths
+): string[] {
+  const completedLessonIds = cache?.completedLessonIds ?? [];
+  const knownLessonIds = new Set(Object.keys(outputs.lessonPaths));
+  return completedLessonIds.filter(lessonId => knownLessonIds.has(lessonId));
+}
+
+async function writeSupportingOutputs(
   plugin: DelvePlugin,
   curriculum: Curriculum,
-  outputs: Stage4OutputPaths,
-  lessonDrafts: Map<string, LessonDraft>,
-  mode: SourceMode
+  outputs: Stage4OutputPaths
 ): Promise<void> {
-  const lessonOrder = flattenLessons(curriculum);
   const courseIndexLink = wikiLinkFromPath(outputs.courseIndexPath);
-  const lessonLinks = lessonOrder.map(item => wikiLinkFromPath(outputs.lessonPaths[item.lesson.lessonId]));
-  const flatLessons = lessonOrder.map(item => item.lesson);
 
   await writeMarkdownFile(
     plugin,
@@ -185,7 +226,6 @@ async function writeCourseOutputs(
   );
 
   for (const module of curriculum.modules) {
-    const moduleLink = wikiLinkFromPath(outputs.modulePaths[module.moduleId]);
     const moduleLessonLinks = module.lessons.map(lesson =>
       wikiLinkFromPath(outputs.lessonPaths[lesson.lessonId])
     );
@@ -196,48 +236,6 @@ async function writeCourseOutputs(
       courseIndexLink,
       moduleLessonLinks
     );
-
-    for (const lesson of module.lessons) {
-      const draft = lessonDrafts.get(lesson.lessonId);
-      if (!draft) {
-        throw new Error(`Missing generated lesson draft for ${lesson.lessonId}`);
-      }
-      const lessonIndex = flatLessons.findIndex(item => item.lessonId === lesson.lessonId);
-      const previous = lessonIndex > 0 ? flatLessons[lessonIndex - 1] : undefined;
-      const next = lessonIndex < flatLessons.length - 1 ? flatLessons[lessonIndex + 1] : undefined;
-      const navigation = buildNavigationLinks(
-        courseIndexLink,
-        moduleLink,
-        previous ? wikiLinkFromPath(outputs.lessonPaths[previous.lessonId]) : undefined,
-        next ? wikiLinkFromPath(outputs.lessonPaths[next.lessonId]) : undefined
-      );
-
-      const content = [
-        buildFrontmatter({
-          status: 'draft',
-          difficulty: draft.difficulty,
-          lessonId: lesson.lessonId,
-          moduleId: module.moduleId,
-          generationMode: mode,
-          sourceRefs: draft.sourceRefs,
-          generatedAt: new Date().toISOString(),
-        }),
-        '',
-        `# ${draft.title}`,
-        '',
-        navigation.breadcrumbs,
-        '',
-        `> ${draft.summary}`,
-        '',
-        draft.bodyMarkdown.trim(),
-        '',
-        '---',
-        '',
-        navigation.sequence,
-      ].join('\n');
-
-      await writeMarkdownFile(plugin, outputs.lessonPaths[lesson.lessonId], content);
-    }
   }
 
   await writeCanvas(
@@ -248,6 +246,54 @@ async function writeCourseOutputs(
     outputs.modulePaths,
     outputs.courseIndexPath
   );
+}
+
+async function writeLessonOutput(
+  plugin: DelvePlugin,
+  curriculum: Curriculum,
+  outputs: Stage4OutputPaths,
+  module: ModuleSpec,
+  lesson: LessonSpec,
+  draft: LessonDraft,
+  mode: SourceMode
+): Promise<void> {
+  const lessonOrder = flattenLessons(curriculum);
+  const flatLessons = lessonOrder.map(item => item.lesson);
+  const lessonIndex = flatLessons.findIndex(item => item.lessonId === lesson.lessonId);
+  const previous = lessonIndex > 0 ? flatLessons[lessonIndex - 1] : undefined;
+  const next = lessonIndex < flatLessons.length - 1 ? flatLessons[lessonIndex + 1] : undefined;
+  const navigation = buildNavigationLinks(
+    wikiLinkFromPath(outputs.courseIndexPath),
+    wikiLinkFromPath(outputs.modulePaths[module.moduleId]),
+    previous ? wikiLinkFromPath(outputs.lessonPaths[previous.lessonId]) : undefined,
+    next ? wikiLinkFromPath(outputs.lessonPaths[next.lessonId]) : undefined
+  );
+
+  const content = [
+    buildFrontmatter({
+      status: 'draft',
+      difficulty: draft.difficulty,
+      lessonId: lesson.lessonId,
+      moduleId: module.moduleId,
+      generationMode: mode,
+      sourceRefs: draft.sourceRefs,
+      generatedAt: new Date().toISOString(),
+    }),
+    '',
+    `# ${draft.title}`,
+    '',
+    navigation.breadcrumbs,
+    '',
+    `> ${draft.summary}`,
+    '',
+    draft.bodyMarkdown.trim(),
+    '',
+    '---',
+    '',
+    navigation.sequence,
+  ].join('\n');
+
+  await writeMarkdownFile(plugin, outputs.lessonPaths[lesson.lessonId], content);
 }
 
 function buildCourseIndex(curriculum: Curriculum, outputs: Stage4OutputPaths): string {
@@ -278,16 +324,16 @@ function flattenLessons(curriculum: Curriculum): Array<{ module: ModuleSpec; les
 function describePrerequisites(
   lesson: LessonSpec,
   lessonOrder: Array<{ module: ModuleSpec; lesson: LessonSpec }>,
-  lessonDrafts: Map<string, LessonDraft>
+  generatedLessonSummaries: Record<string, GeneratedLessonSummary>
 ): string {
   if (lesson.prerequisites.length === 0) return 'None';
 
   return lesson.prerequisites
     .map(prereqId => {
       const prereq = lessonOrder.find(item => item.lesson.lessonId === prereqId)?.lesson;
-      const draft = lessonDrafts.get(prereqId);
+      const generated = generatedLessonSummaries[prereqId];
       return prereq
-        ? `${prereq.title}: ${draft?.summary ?? prereq.description}`
+        ? `${prereq.title}: ${generated?.summary ?? prereq.description}`
         : prereqId;
     })
     .join('\n');

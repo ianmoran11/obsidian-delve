@@ -5933,90 +5933,121 @@ function buildNavigationLinks(courseIndexLink, moduleLink, previousLessonLink, n
 // src/stages/stage4-generate.ts
 async function runStage4(plugin, courseId) {
   await plugin.lockService.acquire(courseId, 4);
-  const stage0 = await plugin.cacheService.readStage(courseId, 0);
-  const stage3 = await plugin.cacheService.readStage(courseId, 3);
-  if (!stage0 || !stage3?.curriculum) {
-    await plugin.lockService.release();
-    throw new Error("Stage 0 and Stage 3 must be complete before lesson generation can begin.");
-  }
-  const curriculum = stage3.curriculum;
-  const context = await plugin.contextService.build();
-  const outputs = buildOutputPaths(curriculum);
-  await ensureFolderTree(plugin, outputs);
-  const totalLessons = curriculum.modules.reduce((sum, module2) => sum + module2.lessons.length, 0);
-  await plugin.cacheService.writeStage(courseId, 4, {
-    courseId,
-    progress: {
-      totalLessons,
-      completedLessons: 0
-    },
-    outputs,
-    status: "pending",
-    startedAt: (/* @__PURE__ */ new Date()).toISOString()
-  });
   try {
-    new import_obsidian11.Notice("Generating lesson notes\u2026");
-    const promptTemplate = await loadPrompt(plugin, "stage4-lesson");
+    const stage0 = await plugin.cacheService.readStage(courseId, 0);
+    const stage3 = await plugin.cacheService.readStage(courseId, 3);
+    if (!stage0 || !stage3?.curriculum) {
+      throw new Error("Stage 0 and Stage 3 must be complete before lesson generation can begin.");
+    }
+    const curriculum = stage3.curriculum;
+    const context = await plugin.contextService.build();
+    const outputs = buildOutputPaths(curriculum);
+    await ensureFolderTree(plugin, outputs);
     const lessonOrder = flattenLessons(curriculum);
-    const lessonDrafts = /* @__PURE__ */ new Map();
-    for (let index = 0; index < lessonOrder.length; index++) {
-      const item = lessonOrder[index];
-      const { module: module2, lesson } = item;
-      await plugin.cacheService.writeStage(courseId, 4, {
+    const totalLessons = lessonOrder.length;
+    const existingCache = await plugin.cacheService.readStage(courseId, 4);
+    const startedAt = existingCache?.startedAt ?? (/* @__PURE__ */ new Date()).toISOString();
+    const completedLessonIds = normalizeCompletedLessonIds(existingCache, outputs);
+    const generatedLessonSummaries = existingCache?.generatedLessonSummaries ?? {};
+    const nextLesson = lessonOrder.find((item) => !completedLessonIds.includes(item.lesson.lessonId));
+    if (!nextLesson) {
+      const completeCache = {
         courseId,
         progress: {
           totalLessons,
-          completedLessons: index,
-          currentLesson: lesson.title
+          completedLessons: totalLessons
         },
         outputs,
-        status: "pending",
-        startedAt: (/* @__PURE__ */ new Date()).toISOString()
-      });
-      const raw = await plugin.llmService.callJson(
-        promptTemplate,
-        {
-          topic: stage0.seedTopic,
-          courseTitle: curriculum.title,
-          moduleTitle: module2.title,
-          lessonTitle: lesson.title,
-          lessonDescription: lesson.description,
-          prerequisiteSummary: describePrerequisites(lesson, lessonOrder, lessonDrafts),
-          generationMode: context.mode,
-          contextSection: buildContextSection3(context)
-        }
-      );
-      const validated = await validateAndRepair(
-        raw,
-        Stage4LessonResponseSchema,
-        plugin.llmService,
-        "Return { lesson: { title, summary, difficulty, bodyMarkdown, sourceRefs } } with non-empty Markdown in bodyMarkdown."
-      );
-      lessonDrafts.set(lesson.lessonId, {
-        ...validated.lesson,
-        difficulty: validated.lesson.difficulty,
-        sourceRefs: validated.lesson.sourceRefs ?? []
-      });
+        completedLessonIds,
+        generatedLessonSummaries,
+        status: "complete",
+        startedAt,
+        completedAt: existingCache?.completedAt ?? (/* @__PURE__ */ new Date()).toISOString()
+      };
+      await plugin.cacheService.writeStage(courseId, 4, completeCache);
+      new import_obsidian11.Notice("All lesson notes have already been generated.");
+      return;
     }
-    await writeCourseOutputs(plugin, curriculum, outputs, lessonDrafts, context.mode);
+    await plugin.cacheService.writeStage(courseId, 4, {
+      courseId,
+      progress: {
+        totalLessons,
+        completedLessons: completedLessonIds.length,
+        currentLesson: nextLesson.lesson.title
+      },
+      outputs,
+      completedLessonIds,
+      generatedLessonSummaries,
+      status: "pending",
+      startedAt
+    });
+    new import_obsidian11.Notice(`Generating lesson ${completedLessonIds.length + 1} of ${totalLessons}: ${nextLesson.lesson.title}`);
+    const promptTemplate = await loadPrompt(plugin, "stage4-lesson");
+    const raw = await plugin.llmService.callJson(
+      promptTemplate,
+      {
+        topic: stage0.seedTopic,
+        courseTitle: curriculum.title,
+        moduleTitle: nextLesson.module.title,
+        lessonTitle: nextLesson.lesson.title,
+        lessonDescription: nextLesson.lesson.description,
+        prerequisiteSummary: describePrerequisites(nextLesson.lesson, lessonOrder, generatedLessonSummaries),
+        generationMode: context.mode,
+        contextSection: buildContextSection3(context)
+      }
+    );
+    const validated = await validateAndRepair(
+      raw,
+      Stage4LessonResponseSchema,
+      plugin.llmService,
+      "Return { lesson: { title, summary, difficulty, bodyMarkdown, sourceRefs } } with non-empty Markdown in bodyMarkdown."
+    );
+    const draft = {
+      ...validated.lesson,
+      difficulty: validated.lesson.difficulty,
+      sourceRefs: validated.lesson.sourceRefs ?? []
+    };
+    await writeLessonOutput(
+      plugin,
+      curriculum,
+      outputs,
+      nextLesson.module,
+      nextLesson.lesson,
+      draft,
+      context.mode
+    );
+    const updatedCompletedLessonIds = [...completedLessonIds, nextLesson.lesson.lessonId];
+    const updatedGeneratedLessonSummaries = {
+      ...generatedLessonSummaries,
+      [nextLesson.lesson.lessonId]: {
+        title: draft.title,
+        summary: draft.summary
+      }
+    };
+    await writeSupportingOutputs(plugin, curriculum, outputs);
+    const isComplete = updatedCompletedLessonIds.length === totalLessons;
     const cache = {
       courseId,
       progress: {
         totalLessons,
-        completedLessons: totalLessons
+        completedLessons: updatedCompletedLessonIds.length
       },
       outputs,
-      status: "complete",
-      startedAt: (/* @__PURE__ */ new Date()).toISOString(),
-      completedAt: (/* @__PURE__ */ new Date()).toISOString()
+      completedLessonIds: updatedCompletedLessonIds,
+      generatedLessonSummaries: updatedGeneratedLessonSummaries,
+      status: isComplete ? "complete" : "pending",
+      startedAt,
+      completedAt: isComplete ? (/* @__PURE__ */ new Date()).toISOString() : void 0
     };
     await plugin.cacheService.writeStage(courseId, 4, cache);
-    await plugin.lockService.release();
-    new import_obsidian11.Notice(`Generated ${totalLessons} lessons in ${outputs.rootDir}.`);
+    new import_obsidian11.Notice(
+      isComplete ? `Generated all ${totalLessons} lessons in ${outputs.rootDir}.` : `Generated ${draft.title}. ${totalLessons - updatedCompletedLessonIds.length} lesson${totalLessons - updatedCompletedLessonIds.length === 1 ? "" : "s"} remaining.`
+    );
   } catch (error) {
-    await plugin.lockService.release();
     new import_obsidian11.Notice(`Delve: lesson generation failed \u2014 ${error.message}`);
     throw error;
+  } finally {
+    await plugin.lockService.release();
   }
 }
 function buildOutputPaths(curriculum) {
@@ -6057,18 +6088,19 @@ async function ensureFolder(plugin, path) {
     return;
   await plugin.app.vault.adapter.mkdir?.(path);
 }
-async function writeCourseOutputs(plugin, curriculum, outputs, lessonDrafts, mode) {
-  const lessonOrder = flattenLessons(curriculum);
+function normalizeCompletedLessonIds(cache, outputs) {
+  const completedLessonIds = cache?.completedLessonIds ?? [];
+  const knownLessonIds = new Set(Object.keys(outputs.lessonPaths));
+  return completedLessonIds.filter((lessonId) => knownLessonIds.has(lessonId));
+}
+async function writeSupportingOutputs(plugin, curriculum, outputs) {
   const courseIndexLink = wikiLinkFromPath(outputs.courseIndexPath);
-  const lessonLinks = lessonOrder.map((item) => wikiLinkFromPath(outputs.lessonPaths[item.lesson.lessonId]));
-  const flatLessons = lessonOrder.map((item) => item.lesson);
   await writeMarkdownFile(
     plugin,
     outputs.courseIndexPath,
     buildCourseIndex(curriculum, outputs)
   );
   for (const module2 of curriculum.modules) {
-    const moduleLink = wikiLinkFromPath(outputs.modulePaths[module2.moduleId]);
     const moduleLessonLinks = module2.lessons.map(
       (lesson) => wikiLinkFromPath(outputs.lessonPaths[lesson.lessonId])
     );
@@ -6079,45 +6111,6 @@ async function writeCourseOutputs(plugin, curriculum, outputs, lessonDrafts, mod
       courseIndexLink,
       moduleLessonLinks
     );
-    for (const lesson of module2.lessons) {
-      const draft = lessonDrafts.get(lesson.lessonId);
-      if (!draft) {
-        throw new Error(`Missing generated lesson draft for ${lesson.lessonId}`);
-      }
-      const lessonIndex = flatLessons.findIndex((item) => item.lessonId === lesson.lessonId);
-      const previous = lessonIndex > 0 ? flatLessons[lessonIndex - 1] : void 0;
-      const next = lessonIndex < flatLessons.length - 1 ? flatLessons[lessonIndex + 1] : void 0;
-      const navigation = buildNavigationLinks(
-        courseIndexLink,
-        moduleLink,
-        previous ? wikiLinkFromPath(outputs.lessonPaths[previous.lessonId]) : void 0,
-        next ? wikiLinkFromPath(outputs.lessonPaths[next.lessonId]) : void 0
-      );
-      const content = [
-        buildFrontmatter({
-          status: "draft",
-          difficulty: draft.difficulty,
-          lessonId: lesson.lessonId,
-          moduleId: module2.moduleId,
-          generationMode: mode,
-          sourceRefs: draft.sourceRefs,
-          generatedAt: (/* @__PURE__ */ new Date()).toISOString()
-        }),
-        "",
-        `# ${draft.title}`,
-        "",
-        navigation.breadcrumbs,
-        "",
-        `> ${draft.summary}`,
-        "",
-        draft.bodyMarkdown.trim(),
-        "",
-        "---",
-        "",
-        navigation.sequence
-      ].join("\n");
-      await writeMarkdownFile(plugin, outputs.lessonPaths[lesson.lessonId], content);
-    }
   }
   await writeCanvas(
     plugin,
@@ -6127,6 +6120,43 @@ async function writeCourseOutputs(plugin, curriculum, outputs, lessonDrafts, mod
     outputs.modulePaths,
     outputs.courseIndexPath
   );
+}
+async function writeLessonOutput(plugin, curriculum, outputs, module2, lesson, draft, mode) {
+  const lessonOrder = flattenLessons(curriculum);
+  const flatLessons = lessonOrder.map((item) => item.lesson);
+  const lessonIndex = flatLessons.findIndex((item) => item.lessonId === lesson.lessonId);
+  const previous = lessonIndex > 0 ? flatLessons[lessonIndex - 1] : void 0;
+  const next = lessonIndex < flatLessons.length - 1 ? flatLessons[lessonIndex + 1] : void 0;
+  const navigation = buildNavigationLinks(
+    wikiLinkFromPath(outputs.courseIndexPath),
+    wikiLinkFromPath(outputs.modulePaths[module2.moduleId]),
+    previous ? wikiLinkFromPath(outputs.lessonPaths[previous.lessonId]) : void 0,
+    next ? wikiLinkFromPath(outputs.lessonPaths[next.lessonId]) : void 0
+  );
+  const content = [
+    buildFrontmatter({
+      status: "draft",
+      difficulty: draft.difficulty,
+      lessonId: lesson.lessonId,
+      moduleId: module2.moduleId,
+      generationMode: mode,
+      sourceRefs: draft.sourceRefs,
+      generatedAt: (/* @__PURE__ */ new Date()).toISOString()
+    }),
+    "",
+    `# ${draft.title}`,
+    "",
+    navigation.breadcrumbs,
+    "",
+    `> ${draft.summary}`,
+    "",
+    draft.bodyMarkdown.trim(),
+    "",
+    "---",
+    "",
+    navigation.sequence
+  ].join("\n");
+  await writeMarkdownFile(plugin, outputs.lessonPaths[lesson.lessonId], content);
 }
 function buildCourseIndex(curriculum, outputs) {
   const lines = [
@@ -6149,13 +6179,13 @@ function flattenLessons(curriculum) {
     (module2) => module2.lessons.map((lesson) => ({ module: module2, lesson }))
   );
 }
-function describePrerequisites(lesson, lessonOrder, lessonDrafts) {
+function describePrerequisites(lesson, lessonOrder, generatedLessonSummaries) {
   if (lesson.prerequisites.length === 0)
     return "None";
   return lesson.prerequisites.map((prereqId) => {
     const prereq = lessonOrder.find((item) => item.lesson.lessonId === prereqId)?.lesson;
-    const draft = lessonDrafts.get(prereqId);
-    return prereq ? `${prereq.title}: ${draft?.summary ?? prereq.description}` : prereqId;
+    const generated = generatedLessonSummaries[prereqId];
+    return prereq ? `${prereq.title}: ${generated?.summary ?? prereq.description}` : prereqId;
   }).join("\n");
 }
 function buildContextSection3(context) {
@@ -6214,7 +6244,7 @@ var SyllabusEditorView = class extends import_obsidian12.ItemView {
     return "map";
   }
   async setState(state, _result) {
-    this.state = state;
+    this.state = this.normalizeState(state);
     this.saving = false;
     this.dirty = false;
     this.generatingLessons = false;
@@ -6224,7 +6254,8 @@ var SyllabusEditorView = class extends import_obsidian12.ItemView {
     return this.state;
   }
   async onOpen() {
-    if (this.state.courseId)
+    this.state = this.normalizeState(this.state);
+    if (this.getCourseId())
       await this.render();
   }
   async onClose() {
@@ -6234,10 +6265,16 @@ var SyllabusEditorView = class extends import_obsidian12.ItemView {
     const { contentEl } = this;
     contentEl.empty();
     contentEl.addClass("delve-syllabus");
+    const courseId = this.getCourseId();
+    const stage4 = courseId ? await this.plugin.cacheService.readStage(courseId, 4) : void 0;
+    const lessonCount = countLessons(this.state.curriculum);
+    const completedLessons = stage4?.progress.completedLessons ?? 0;
+    const remainingLessons = Math.max(lessonCount - completedLessons, 0);
+    const generationComplete = stage4?.status === "complete" && lessonCount > 0;
     const header = contentEl.createDiv("delve-syllabus__header");
     header.createEl("h2", { text: `Curriculum Draft: ${this.state.seedTopic}` });
     header.createEl("p", {
-      text: "Review and edit the draft syllabus before lesson generation. Stage 4 is still coming next.",
+      text: "Review and edit the draft syllabus, then generate lessons one at a time as you are ready to study them.",
       cls: "delve-syllabus__hint"
     });
     const meta = header.createDiv("delve-syllabus__meta");
@@ -6252,9 +6289,15 @@ var SyllabusEditorView = class extends import_obsidian12.ItemView {
       cls: "delve-syllabus__count"
     });
     meta.createEl("span", {
-      text: `${countLessons(this.state.curriculum)} lessons`,
+      text: `${lessonCount} lessons`,
       cls: "delve-syllabus__count"
     });
+    if (lessonCount > 0) {
+      meta.createEl("span", {
+        text: generationComplete ? "All lessons generated" : `${completedLessons}/${lessonCount} generated`,
+        cls: "delve-syllabus__count"
+      });
+    }
     const body = contentEl.createDiv("delve-syllabus__body");
     if (this.state.loading) {
       body.createDiv("delve-syllabus__loading").textContent = "Designing your curriculum draft\u2026";
@@ -6336,8 +6379,14 @@ var SyllabusEditorView = class extends import_obsidian12.ItemView {
     const status = footer.createDiv("delve-syllabus__status");
     if (this.saving) {
       status.textContent = "Saving syllabus draft\u2026";
+    } else if (this.generatingLessons) {
+      status.textContent = remainingLessons > 0 ? `Generating lesson ${completedLessons + 1} of ${lessonCount}\u2026` : "Wrapping up lesson generation\u2026";
     } else if (this.dirty) {
       status.textContent = "You have unsaved curriculum edits.";
+    } else if (generationComplete) {
+      status.textContent = "All lessons have been generated into the vault.";
+    } else if (completedLessons > 0) {
+      status.textContent = `${completedLessons} lesson${completedLessons === 1 ? "" : "s"} generated. You can keep going whenever you\u2019re ready.`;
     } else {
       status.textContent = "Draft saved locally in plugin data.";
     }
@@ -6355,10 +6404,10 @@ var SyllabusEditorView = class extends import_obsidian12.ItemView {
     saveBtn.disabled = this.saving || this.generatingLessons || !this.dirty;
     saveBtn.addEventListener("click", () => void this.handleSaveDraft());
     const finalizeBtn = actions.createEl("button", {
-      text: this.generatingLessons ? "Generating lessons\u2026" : "Generate lessons",
+      text: getGenerateButtonLabel(this.generatingLessons, generationComplete, completedLessons),
       cls: "mod-cta delve-btn-primary delve-syllabus__finalize"
     });
-    finalizeBtn.disabled = this.saving || this.generatingLessons || Boolean(this.state.loading);
+    finalizeBtn.disabled = this.saving || this.generatingLessons || Boolean(this.state.loading) || generationComplete;
     finalizeBtn.addEventListener("click", () => void this.handleGenerateLessons());
   }
   renderField(parent, label, value, onInput) {
@@ -6380,15 +6429,15 @@ var SyllabusEditorView = class extends import_obsidian12.ItemView {
     textarea.addEventListener("input", () => onInput(textarea.value));
   }
   async handleSaveDraft() {
+    const courseId = await this.ensureCourseId();
+    if (!courseId) {
+      new import_obsidian12.Notice("This curriculum tab is missing its course id. Reopen it from the assessment view.");
+      return;
+    }
     this.saving = true;
     await this.render();
     try {
-      await this.plugin.cacheService.writeStage(this.state.courseId, 3, {
-        courseId: this.state.courseId,
-        curriculum: this.state.curriculum,
-        status: "complete",
-        completedAt: (/* @__PURE__ */ new Date()).toISOString()
-      });
+      await this.writeCurrentStage3(courseId);
       this.dirty = false;
       new import_obsidian12.Notice("Curriculum draft saved.");
     } finally {
@@ -6397,28 +6446,32 @@ var SyllabusEditorView = class extends import_obsidian12.ItemView {
     }
   }
   async handleRegenerate() {
+    const courseId = this.getCourseId();
+    if (!courseId) {
+      new import_obsidian12.Notice("This curriculum tab is missing its course id. Reopen it from the assessment view.");
+      return;
+    }
     try {
-      await runStage3(this.plugin, this.state.courseId);
+      await runStage3(this.plugin, courseId);
     } catch (e) {
       new import_obsidian12.Notice(`Could not regenerate curriculum: ${e.message}`);
     }
   }
   async handleGenerateLessons() {
+    const courseId = await this.ensureCourseId();
+    if (!courseId) {
+      new import_obsidian12.Notice("This curriculum tab is missing its course id. Reopen it from the assessment view.");
+      return;
+    }
     if (this.generatingLessons)
       return;
     this.generatingLessons = true;
     await this.render();
     try {
-      if (this.dirty) {
-        await this.plugin.cacheService.writeStage(this.state.courseId, 3, {
-          courseId: this.state.courseId,
-          curriculum: this.state.curriculum,
-          status: "complete",
-          completedAt: (/* @__PURE__ */ new Date()).toISOString()
-        });
-        this.dirty = false;
-      }
-      await runStage4(this.plugin, this.state.courseId);
+      await this.writeCurrentStage3(courseId);
+      await this.ensureStage0SeedTopic(courseId);
+      this.dirty = false;
+      await runStage4(this.plugin, courseId);
     } catch (e) {
       new import_obsidian12.Notice(`Could not generate lessons: ${e.message}`);
     } finally {
@@ -6436,6 +6489,62 @@ var SyllabusEditorView = class extends import_obsidian12.ItemView {
     if (saveBtn)
       saveBtn.disabled = false;
   }
+  getCourseId() {
+    return this.state.courseId || this.state.curriculum.courseId || "";
+  }
+  async ensureCourseId() {
+    const existingCourseId = this.getCourseId();
+    if (existingCourseId) {
+      this.state.courseId = existingCourseId;
+      this.state.curriculum.courseId = existingCourseId;
+      return existingCourseId;
+    }
+    const recoveredCourseId = generateRecoveredCourseId(this.state.seedTopic);
+    this.state.courseId = recoveredCourseId;
+    this.state.curriculum.courseId = recoveredCourseId;
+    return recoveredCourseId;
+  }
+  async writeCurrentStage3(courseId) {
+    const cache = {
+      courseId,
+      curriculum: {
+        ...this.state.curriculum,
+        courseId
+      },
+      status: "complete",
+      completedAt: (/* @__PURE__ */ new Date()).toISOString()
+    };
+    await this.plugin.cacheService.writeStage(courseId, 3, cache);
+  }
+  async ensureStage0SeedTopic(courseId) {
+    const existingStage0 = await this.plugin.cacheService.readStage(courseId, 0);
+    if (existingStage0)
+      return;
+    const seedTopic = this.state.seedTopic.trim();
+    if (!seedTopic)
+      return;
+    const cache = {
+      courseId,
+      seedTopic,
+      taxonomy: [],
+      selectedScope: [],
+      scopeSummary: seedTopic,
+      status: "complete",
+      completedAt: (/* @__PURE__ */ new Date()).toISOString()
+    };
+    await this.plugin.cacheService.writeStage(courseId, 0, cache);
+  }
+  normalizeState(state) {
+    const courseId = state.courseId || state.curriculum?.courseId || "";
+    return {
+      ...state,
+      courseId,
+      curriculum: {
+        ...state.curriculum,
+        courseId
+      }
+    };
+  }
 };
 function countLessons(curriculum) {
   return curriculum.modules.reduce((total, module2) => total + module2.lessons.length, 0);
@@ -6445,6 +6554,19 @@ function describeSourceMode(mode, fileCount) {
     return "Knowledge-only";
   const label = mode === "grounded" ? "Grounded" : "Augmented";
   return `${label} \u2014 ${fileCount} source file${fileCount === 1 ? "" : "s"}`;
+}
+function getGenerateButtonLabel(generatingLessons, generationComplete, completedLessons) {
+  if (generatingLessons)
+    return "Generating next lesson\u2026";
+  if (generationComplete)
+    return "All lessons generated";
+  if (completedLessons > 0)
+    return "Generate next lesson";
+  return "Generate first lesson";
+}
+function generateRecoveredCourseId(seedTopic) {
+  const topicSlug = seedTopic.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "course";
+  return `recovered-${topicSlug}-${Date.now().toString(36)}`;
 }
 
 // src/ui/resume-modal.ts
