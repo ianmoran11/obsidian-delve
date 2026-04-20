@@ -34,6 +34,338 @@ var import_obsidian14 = require("obsidian");
 
 // src/settings.ts
 var import_obsidian = require("obsidian");
+
+// src/constants.ts
+var VAULT_PATHS = {
+  RAW_SOURCES: "1-Raw_Sources",
+  MARKDOWN_SOURCES: "2-Markdown_Sources",
+  SYNTHESIZED: "3-Synthesized",
+  CURRICULUM: "4-Curriculum",
+  SETTINGS: "Delve Settings",
+  PROMPTS: "Delve Settings/Prompts"
+};
+var LOCK_FILE = ".delve.lock";
+var TAXONOMY_VIEW_TYPE = "delve-taxonomy-view";
+var CONCEPTS_VIEW_TYPE = "delve-concepts-view";
+var DIAGNOSTIC_VIEW_TYPE = "delve-diagnostic-view";
+var SYLLABUS_VIEW_TYPE = "delve-syllabus-editor-view";
+
+// src/prompts/index.ts
+var DEFAULT_MODEL = "anthropic/claude-3-5-sonnet";
+var CONFIG_NOTE_PATH = `${VAULT_PATHS.SETTINGS}/Delve Config.md`;
+var PROMPTS = {
+  "stage0-taxonomy": {
+    title: "Stage 0 - Taxonomy",
+    filename: "Stage 0 - Taxonomy.md",
+    description: "Generates the first scoped taxonomy for a broad topic.",
+    defaultModel: DEFAULT_MODEL,
+    template: `You are a curriculum expert. Given the broad topic "{{topic}}", generate a comprehensive hierarchical taxonomy of the subject area.
+
+Return a JSON object with this EXACT structure:
+{
+  "taxonomy": [
+    {
+      "id": "unique-kebab-case-id",
+      "title": "Domain Title",
+      "description": "One sentence describing this domain.",
+      "children": [
+        { "id": "unique-child-id", "title": "Subtopic", "description": "One sentence.", "children": [] }
+      ]
+    }
+  ]
+}
+
+Requirements:
+- 3 to 5 top-level domains, 3 to 6 subtopics per domain, maximum 3 levels deep
+- Every node MUST have: id (unique kebab-case), title, description
+- Cover the full breadth of "{{topic}}" comprehensively`
+  },
+  "stage0-disaggregate": {
+    title: "Stage 0 - Disaggregate Node",
+    filename: "Stage 0 - Disaggregate Node.md",
+    description: "Splits one scoped node into more specific alternatives.",
+    defaultModel: DEFAULT_MODEL,
+    template: `A learner is scoping a course on "{{topic}}".
+
+Split "{{nodeTitle}}" ({{nodeDescription}}) into more specific, distinct alternatives at the same level.
+Current selections: {{selectedScope}}
+
+Return: { "nodes": [ { "id": "kebab-id", "title": "...", "description": "One sentence." } ] }
+- 2 to 5 nodes, non-overlapping, covering what "{{nodeTitle}}" covered
+- Do NOT include "{{nodeTitle}}" itself`
+  },
+  "stage0-expand": {
+    title: "Stage 0 - Expand Node",
+    filename: "Stage 0 - Expand Node.md",
+    description: "Adds more granular children under a chosen taxonomy node.",
+    defaultModel: DEFAULT_MODEL,
+    template: `A learner is scoping a course on "{{topic}}".
+
+Add detailed subtopics under "{{nodeTitle}}" ({{nodeDescription}}).
+
+Return: { "children": [ { "id": "kebab-id", "title": "...", "description": "One sentence." } ] }
+- 3 to 6 children, fine-grained and learnable within "{{nodeTitle}}"`
+  },
+  "stage0-suggest-related": {
+    title: "Stage 0 - Suggest Related Topics",
+    filename: "Stage 0 - Suggest Related Topics.md",
+    description: "Suggests missing top-level topics related to the current scope.",
+    defaultModel: DEFAULT_MODEL,
+    template: `A learner is building a course on "{{topic}}".
+Existing topics: {{existingTopics}}
+Current selections: {{selectedScope}}
+
+Suggest 2\u20135 additional top-level topics NOT already listed.
+
+Return: { "topics": [ { "id": "kebab-id", "title": "...", "description": "One sentence explaining relevance." } ] }`
+  },
+  "stage1-concepts": {
+    title: "Stage 1 - Concept Extraction",
+    filename: "Stage 1 - Concept Extraction.md",
+    description: "Extracts the foundational concepts for the chosen scope.",
+    defaultModel: DEFAULT_MODEL,
+    template: `You are a curriculum expert building a personalised course on "{{topic}}", scoped to: {{scopeSummary}}.
+
+Selected areas: {{scopeNodes}}
+
+{{contextSection}}
+
+Extract 15 to 25 foundational concepts and key terms the learner needs to master this scope.
+
+Return a JSON object:
+{
+  "concepts": [
+    {
+      "id": "unique-kebab-id",
+      "title": "Concept Name",
+      "description": "2\u20133 sentences explaining this concept and why it matters for the learner.",
+      "sourceRefs": []
+    }
+  ]
+}
+
+Requirements:
+- 15 to 25 concepts, ordered from foundational to advanced
+- Each concept must be DISTINCT and LEARNABLE \u2014 not just a vocabulary term
+- If source material was provided and a concept appears in it, list the source filename(s) in sourceRefs
+- If no source material was provided, sourceRefs must be an empty array
+- Cover prerequisites, core ideas, and practical applications within the scope`
+  },
+  "stage3-curriculum": {
+    title: "Stage 3 - Curriculum Design",
+    filename: "Stage 3 - Curriculum Design.md",
+    description: "Designs the editable syllabus from scope, concepts, and self-assessment.",
+    defaultModel: DEFAULT_MODEL,
+    template: `You are designing a personalised course syllabus for "{{topic}}", scoped to: {{scopeSummary}}.
+
+Selected scope nodes: {{scopeNodes}}
+
+Foundational concepts and learner confidence:
+{{conceptProficiency}}
+
+{{contextSection}}
+
+Design a draft curriculum that adapts to the learner's current knowledge.
+
+Return a JSON object:
+{
+  "curriculum": {
+    "courseId": "{{courseId}}",
+    "title": "Course title",
+    "modules": [
+      {
+        "moduleId": "module-kebab-id",
+        "title": "Module title",
+        "description": "2-3 sentences explaining the module's role in the course.",
+        "lessons": [
+          {
+            "lessonId": "lesson-kebab-id",
+            "title": "Lesson title",
+            "description": "1-2 sentences explaining what the learner will achieve.",
+            "prerequisites": ["earlier-lesson-id"]
+          }
+        ]
+      }
+    ]
+  }
+}
+
+Requirements:
+- Create 3 to 6 modules with 2 to 5 lessons each
+- Order lessons from foundational to advanced within each module
+- Use the learner's proficiency scores:
+  - scores 1-2 mean teach thoroughly
+  - score 3 means concise but still included
+  - scores 4-5 mean condense or omit unless needed as a prerequisite
+- Every lesson must have a unique lessonId in kebab-case
+- prerequisites must only reference lessonIds that appear earlier in the curriculum
+- Keep the syllabus tightly scoped to "{{scopeSummary}}"
+- Prefer user sources when they are strong, but fill gaps with general knowledge when needed`
+  },
+  "stage4-lesson": {
+    title: "Stage 4 - Lesson Generation",
+    filename: "Stage 4 - Lesson Generation.md",
+    description: "Writes one lesson at a time into the curriculum vault structure.",
+    defaultModel: DEFAULT_MODEL,
+    template: `You are writing one lesson in an Obsidian-native personalised course on "{{topic}}".
+
+Course title: {{courseTitle}}
+Module: {{moduleTitle}}
+Lesson: {{lessonTitle}}
+Lesson brief: {{lessonDescription}}
+Prerequisites already covered: {{prerequisiteSummary}}
+Generation mode: {{generationMode}}
+
+{{contextSection}}
+
+Write a complete lesson in Obsidian-flavoured Markdown.
+
+Return a JSON object:
+{
+  "lesson": {
+    "title": "Lesson title",
+    "summary": "1-2 sentence summary of the lesson.",
+    "difficulty": "intro",
+    "bodyMarkdown": "# Optional internal headings\\n\\nLesson content...",
+    "sourceRefs": ["optional-source.md"]
+  }
+}
+
+Requirements:
+- bodyMarkdown must be valid Markdown only, with no YAML frontmatter
+- Teach to the learner's current level implied by the curriculum brief
+- Include explanation, intuition, and at least one concrete example or worked scenario
+- Keep the lesson tightly scoped to the lesson brief and prerequisites
+- difficulty must be one of: intro, intermediate, advanced
+- sourceRefs should list filenames only when the lesson materially uses user-provided sources; otherwise return []
+- Do not include navigation links, breadcrumbs, or file metadata in bodyMarkdown`
+  }
+};
+async function ensurePromptSettings(plugin) {
+  await ensureFolder(plugin, VAULT_PATHS.SETTINGS);
+  await ensureFolder(plugin, VAULT_PATHS.PROMPTS);
+  const runtimeConfig = await ensureRuntimeConfig(plugin);
+  for (const [name, definition] of Object.entries(PROMPTS)) {
+    const legacyOverride = plugin.settings.promptOverrides[name];
+    const notePath = getPromptPath(name);
+    const exists = await plugin.app.vault.adapter.exists(notePath);
+    if (exists)
+      continue;
+    const content = buildPromptNote(definition, legacyOverride?.trim() || definition.template, runtimeConfig.defaultModel);
+    await plugin.app.vault.adapter.write(notePath, content);
+  }
+}
+async function loadPrompt(plugin, name) {
+  await ensurePromptSettings(plugin);
+  const runtimeConfig = await loadRuntimeConfig(plugin);
+  const notePath = getPromptPath(name);
+  const raw = await plugin.app.vault.adapter.read(notePath);
+  const parsed = parseNote(raw);
+  const definition = PROMPTS[name];
+  return {
+    name,
+    model: normalizeScalar(parsed.frontmatter.model) || runtimeConfig.defaultModel || definition.defaultModel,
+    template: parsed.body.trim() || definition.template,
+    path: notePath
+  };
+}
+async function loadRuntimeConfig(plugin) {
+  await ensurePromptSettings(plugin);
+  const raw = await plugin.app.vault.adapter.read(CONFIG_NOTE_PATH);
+  const parsed = parseNote(raw);
+  return {
+    defaultModel: normalizeScalar(parsed.frontmatter.defaultModel) || plugin.settings.defaultModel || DEFAULT_MODEL
+  };
+}
+function getPromptPath(name) {
+  return `${VAULT_PATHS.PROMPTS}/${PROMPTS[name].filename}`;
+}
+function getSettingsPaths() {
+  return {
+    config: CONFIG_NOTE_PATH,
+    prompts: VAULT_PATHS.PROMPTS
+  };
+}
+async function ensureRuntimeConfig(plugin) {
+  const exists = await plugin.app.vault.adapter.exists(CONFIG_NOTE_PATH);
+  if (!exists) {
+    const content = buildConfigNote(plugin.settings.defaultModel || DEFAULT_MODEL);
+    await plugin.app.vault.adapter.write(CONFIG_NOTE_PATH, content);
+  }
+  return loadRuntimeConfigWithoutEnsure(plugin);
+}
+async function loadRuntimeConfigWithoutEnsure(plugin) {
+  const raw = await plugin.app.vault.adapter.read(CONFIG_NOTE_PATH);
+  const parsed = parseNote(raw);
+  return {
+    defaultModel: normalizeScalar(parsed.frontmatter.defaultModel) || plugin.settings.defaultModel || DEFAULT_MODEL
+  };
+}
+async function ensureFolder(plugin, path) {
+  const exists = await plugin.app.vault.adapter.exists(path);
+  if (!exists) {
+    await plugin.app.vault.adapter.mkdir?.(path);
+  }
+}
+function buildConfigNote(defaultModel) {
+  return [
+    "---",
+    `defaultModel: ${escapeYamlValue(defaultModel)}`,
+    "---",
+    "",
+    "# Delve Config",
+    "",
+    "This note stores editable Delve configuration that should live in the vault rather than plugin data.",
+    "",
+    "- `defaultModel`: fallback OpenRouter model used when a prompt note does not set its own `model` property.",
+    "",
+    "The API key stays in the Delve plugin settings panel and is not written into the vault.",
+    ""
+  ].join("\n");
+}
+function buildPromptNote(definition, template, model) {
+  return [
+    "---",
+    `title: ${escapeYamlValue(definition.title)}`,
+    `description: ${escapeYamlValue(definition.description)}`,
+    `model: ${escapeYamlValue(model || definition.defaultModel)}`,
+    "---",
+    "",
+    template.trim(),
+    ""
+  ].join("\n");
+}
+function parseNote(content) {
+  const normalized = content.replace(/\r\n/g, "\n");
+  if (!normalized.startsWith("---\n")) {
+    return { frontmatter: {}, body: normalized };
+  }
+  const end = normalized.indexOf("\n---\n", 4);
+  if (end === -1) {
+    return { frontmatter: {}, body: normalized };
+  }
+  const frontmatterBlock = normalized.slice(4, end);
+  const body = normalized.slice(end + 5).trim();
+  const frontmatter = frontmatterBlock.split("\n").map((line) => line.trim()).filter(Boolean).reduce((acc, line) => {
+    const separator = line.indexOf(":");
+    if (separator === -1)
+      return acc;
+    const key = line.slice(0, separator).trim();
+    const value = line.slice(separator + 1).trim().replace(/^["']|["']$/g, "");
+    if (key)
+      acc[key] = value;
+    return acc;
+  }, {});
+  return { frontmatter, body };
+}
+function normalizeScalar(value) {
+  return value?.trim() ?? "";
+}
+function escapeYamlValue(value) {
+  return JSON.stringify(value);
+}
+
+// src/settings.ts
 var DEFAULT_SETTINGS = {
   openRouterApiKey: "",
   defaultModel: "anthropic/claude-3-5-sonnet",
@@ -55,13 +387,21 @@ var DelveSettingsTab = class extends import_obsidian.PluginSettingTab {
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian.Setting(containerEl).setName("Model").setDesc("OpenRouter model ID (e.g. anthropic/claude-3-5-sonnet, google/gemini-flash-1.5).").addText(
-      (text) => text.setValue(this.plugin.settings.defaultModel).onChange(async (value) => {
-        this.plugin.settings.defaultModel = value.trim();
-        await this.plugin.saveSettings();
+    new import_obsidian.Setting(containerEl).setName("Vault settings folder").setDesc(`Prompts and non-secret Delve config now live in "${getSettingsPaths().config}" and "${getSettingsPaths().prompts}".`).addButton(
+      (btn) => btn.setButtonText("Create / refresh notes").onClick(async () => {
+        btn.setButtonText("Syncing\u2026").setDisabled(true);
+        try {
+          await ensurePromptSettings(this.plugin);
+          const runtimeConfig = await loadRuntimeConfig(this.plugin);
+          new import_obsidian.Notice(`Delve settings notes are ready. Default model: ${runtimeConfig.defaultModel}`);
+        } catch (e) {
+          new import_obsidian.Notice(`Could not sync settings notes: ${e.message}`);
+        } finally {
+          btn.setButtonText("Create / refresh notes").setDisabled(false);
+        }
       })
     );
-    new import_obsidian.Setting(containerEl).setName("Verify connection").setDesc("Check that your API key is valid and the model is reachable.").addButton(
+    new import_obsidian.Setting(containerEl).setName("Verify connection").setDesc("Check that your API key is valid. Prompt-specific models are configured in the vault settings notes.").addButton(
       (btn) => btn.setButtonText("Test connection").onClick(async () => {
         if (!this.plugin.settings.openRouterApiKey) {
           new import_obsidian.Notice("Enter an API key first.");
@@ -70,7 +410,8 @@ var DelveSettingsTab = class extends import_obsidian.PluginSettingTab {
         btn.setButtonText("Testing\u2026").setDisabled(true);
         try {
           await this.plugin.llmService.listModels();
-          new import_obsidian.Notice(`\u2713 Connected \u2014 model: ${this.plugin.settings.defaultModel}`);
+          const runtimeConfig = await loadRuntimeConfig(this.plugin);
+          new import_obsidian.Notice(`\u2713 Connected \u2014 default model in vault config: ${runtimeConfig.defaultModel}`);
         } catch (e) {
           new import_obsidian.Notice(`\u2717 Connection failed: ${e.message}`);
         } finally {
@@ -78,34 +419,11 @@ var DelveSettingsTab = class extends import_obsidian.PluginSettingTab {
         }
       })
     );
-    containerEl.createEl("h3", { text: "Prompt overrides" });
+    containerEl.createEl("h3", { text: "Editable Prompt Notes" });
     containerEl.createEl("p", {
-      text: "Override any stage prompt. Leave blank to use the built-in default.",
+      text: "Edit prompt bodies and per-stage models directly in the notes inside the Delve Settings folder. Each prompt note stores its model in YAML properties.",
       cls: "setting-item-description"
     });
-    const promptNames = [
-      { key: "stage0-taxonomy", label: "Stage 0: Initial taxonomy" },
-      { key: "stage0-disaggregate", label: "Stage 0: Split node" },
-      { key: "stage0-expand", label: "Stage 0: Expand node" },
-      { key: "stage0-suggest-related", label: "Stage 0: Suggest related topics" },
-      { key: "stage1-concepts", label: "Stage 1: Concept extraction" },
-      { key: "stage3-curriculum", label: "Stage 3: Curriculum design" },
-      { key: "stage4-lesson", label: "Stage 4: Lesson generation" }
-    ];
-    for (const { key, label } of promptNames) {
-      new import_obsidian.Setting(containerEl).setName(label).addTextArea((area) => {
-        area.setPlaceholder("Leave blank to use default\u2026").setValue(this.plugin.settings.promptOverrides[key] ?? "").onChange(async (value) => {
-          if (value.trim()) {
-            this.plugin.settings.promptOverrides[key] = value;
-          } else {
-            delete this.plugin.settings.promptOverrides[key];
-          }
-          await this.plugin.saveSettings();
-        });
-        area.inputEl.rows = 6;
-        area.inputEl.style.width = "100%";
-      });
-    }
   }
 };
 
@@ -122,14 +440,14 @@ var OpenRouterService = class {
     this.apiKey = apiKey;
     this.model = model;
   }
-  async callJson(prompt, variables) {
+  async callJson(prompt, variables, model) {
     const rendered = renderPrompt(prompt, variables);
-    const text = await this.callWithRetry(rendered, "json_object");
+    const text = await this.callWithRetry(rendered, "json_object", model);
     return parseJsonResponse(text);
   }
-  async callText(prompt, variables) {
+  async callText(prompt, variables, model) {
     const rendered = renderPrompt(prompt, variables);
-    return this.callWithRetry(rendered, "text");
+    return this.callWithRetry(rendered, "text", model);
   }
   async listModels() {
     const now = Date.now();
@@ -146,12 +464,12 @@ var OpenRouterService = class {
     this.modelCache = { models, fetchedAt: now };
     return models;
   }
-  async callWithRetry(content, responseFormat) {
+  async callWithRetry(content, responseFormat, model) {
     const delays = [1e3, 2e3, 4e3];
     let lastError = new Error("Unknown LLM error");
     for (let attempt = 0; attempt <= delays.length; attempt++) {
       try {
-        return await this.callOnce(content, responseFormat);
+        return await this.callOnce(content, responseFormat, model);
       } catch (e) {
         lastError = e;
         if (attempt < delays.length) {
@@ -161,9 +479,9 @@ var OpenRouterService = class {
     }
     throw lastError;
   }
-  async callOnce(content, responseFormat) {
+  async callOnce(content, responseFormat, model) {
     const body = {
-      model: this.model,
+      model: model || this.model,
       messages: [{ role: "user", content }]
     };
     if (responseFormat === "json_object") {
@@ -302,19 +620,6 @@ var CacheService = class {
     await this.plugin.saveData(data);
   }
 };
-
-// src/constants.ts
-var VAULT_PATHS = {
-  RAW_SOURCES: "1-Raw_Sources",
-  MARKDOWN_SOURCES: "2-Markdown_Sources",
-  SYNTHESIZED: "3-Synthesized",
-  CURRICULUM: "4-Curriculum"
-};
-var LOCK_FILE = ".delve.lock";
-var TAXONOMY_VIEW_TYPE = "delve-taxonomy-view";
-var CONCEPTS_VIEW_TYPE = "delve-concepts-view";
-var DIAGNOSTIC_VIEW_TYPE = "delve-diagnostic-view";
-var SYLLABUS_VIEW_TYPE = "delve-syllabus-editor-view";
 
 // src/services/lock.ts
 var LockService = class {
@@ -4543,16 +4848,17 @@ async function runStage1(plugin, courseId) {
     if (!stage0)
       throw new Error("Stage 0 not complete \u2014 run the topic explorer first.");
     const context = await plugin.contextService.build();
-    const promptTemplate = await plugin.loadPrompt("stage1-concepts");
+    const promptConfig = await plugin.loadPrompt("stage1-concepts");
     const scopeNodeTitles = stage0.selectedScope.map((id) => findNodeTitle(stage0.taxonomy, id)).filter((t) => t !== void 0).join(", ");
     const raw = await plugin.llmService.callJson(
-      promptTemplate,
+      promptConfig.template,
       {
         topic: stage0.seedTopic,
         scopeSummary: stage0.scopeSummary,
         scopeNodes: scopeNodeTitles || stage0.scopeSummary,
         contextSection: buildContextSection(context)
-      }
+      },
+      promptConfig.model
     );
     const validated = await validateAndRepair(
       raw,
@@ -4622,10 +4928,11 @@ async function runStage0(plugin, seedTopic, courseId) {
   });
   try {
     new import_obsidian4.Notice("Generating topic taxonomy\u2026");
-    const promptTemplate = await plugin.loadPrompt("stage0-taxonomy");
+    const promptConfig = await plugin.loadPrompt("stage0-taxonomy");
     const raw = await plugin.llmService.callJson(
-      promptTemplate,
-      { topic: seedTopic }
+      promptConfig.template,
+      { topic: seedTopic },
+      promptConfig.model
     );
     const validated = await validateAndRepair(
       raw,
@@ -4656,13 +4963,17 @@ async function runStage0(plugin, seedTopic, courseId) {
   }
 }
 async function disaggregateNode(plugin, seedTopic, node, selectedScope) {
-  const prompt = await plugin.loadPrompt("stage0-disaggregate");
-  const raw = await plugin.llmService.callJson(prompt, {
-    topic: seedTopic,
-    nodeTitle: node.title,
-    nodeDescription: node.description,
-    selectedScope: selectedScope.join(", ") || "none selected yet"
-  });
+  const promptConfig = await plugin.loadPrompt("stage0-disaggregate");
+  const raw = await plugin.llmService.callJson(
+    promptConfig.template,
+    {
+      topic: seedTopic,
+      nodeTitle: node.title,
+      nodeDescription: node.description,
+      selectedScope: selectedScope.join(", ") || "none selected yet"
+    },
+    promptConfig.model
+  );
   const validated = await validateAndRepair(
     raw,
     DisaggregateResponseSchema,
@@ -4672,12 +4983,16 @@ async function disaggregateNode(plugin, seedTopic, node, selectedScope) {
   return validated.nodes;
 }
 async function expandNode(plugin, seedTopic, node) {
-  const prompt = await plugin.loadPrompt("stage0-expand");
-  const raw = await plugin.llmService.callJson(prompt, {
-    topic: seedTopic,
-    nodeTitle: node.title,
-    nodeDescription: node.description
-  });
+  const promptConfig = await plugin.loadPrompt("stage0-expand");
+  const raw = await plugin.llmService.callJson(
+    promptConfig.template,
+    {
+      topic: seedTopic,
+      nodeTitle: node.title,
+      nodeDescription: node.description
+    },
+    promptConfig.model
+  );
   const validated = await validateAndRepair(
     raw,
     ExpandResponseSchema,
@@ -4687,13 +5002,17 @@ async function expandNode(plugin, seedTopic, node) {
   return validated.children;
 }
 async function suggestRelated(plugin, seedTopic, existingTaxonomy, selectedScope) {
-  const prompt = await plugin.loadPrompt("stage0-suggest-related");
+  const promptConfig = await plugin.loadPrompt("stage0-suggest-related");
   const existingTitles = existingTaxonomy.map((n) => n.title).join(", ");
-  const raw = await plugin.llmService.callJson(prompt, {
-    topic: seedTopic,
-    existingTopics: existingTitles,
-    selectedScope: selectedScope.join(", ") || "none selected yet"
-  });
+  const raw = await plugin.llmService.callJson(
+    promptConfig.template,
+    {
+      topic: seedTopic,
+      existingTopics: existingTitles,
+      selectedScope: selectedScope.join(", ") || "none selected yet"
+    },
+    promptConfig.model
+  );
   const validated = await validateAndRepair(
     raw,
     SuggestRelatedResponseSchema,
@@ -5248,9 +5567,9 @@ async function runStage3(plugin, courseId) {
   plugin.app.workspace.revealLeaf(leaf);
   try {
     new import_obsidian9.Notice("Designing curriculum draft\u2026");
-    const promptTemplate = await plugin.loadPrompt("stage3-curriculum");
+    const promptConfig = await plugin.loadPrompt("stage3-curriculum");
     const raw = await plugin.llmService.callJson(
-      promptTemplate,
+      promptConfig.template,
       {
         courseId,
         topic: stage0.seedTopic,
@@ -5258,7 +5577,8 @@ async function runStage3(plugin, courseId) {
         scopeNodes: buildScopeNodes(stage0.taxonomy, stage0.selectedScope) || stage0.scopeSummary,
         conceptProficiency: buildConceptProficiency(stage1.concepts, stage2.proficiencyMap),
         contextSection: buildContextSection2(context)
-      }
+      },
+      promptConfig.model
     );
     const validated = await validateAndRepair(
       raw,
@@ -5656,160 +5976,6 @@ var import_obsidian12 = require("obsidian");
 // src/stages/stage4-generate.ts
 var import_obsidian11 = require("obsidian");
 
-// src/prompts/index.ts
-var DEFAULTS = {
-  "stage0-taxonomy": `You are a curriculum expert. Given the broad topic "{{topic}}", generate a comprehensive hierarchical taxonomy of the subject area.
-
-Return a JSON object with this EXACT structure:
-{
-  "taxonomy": [
-    {
-      "id": "unique-kebab-case-id",
-      "title": "Domain Title",
-      "description": "One sentence describing this domain.",
-      "children": [
-        { "id": "unique-child-id", "title": "Subtopic", "description": "One sentence.", "children": [] }
-      ]
-    }
-  ]
-}
-
-Requirements:
-- 3 to 5 top-level domains, 3 to 6 subtopics per domain, maximum 3 levels deep
-- Every node MUST have: id (unique kebab-case), title, description
-- Cover the full breadth of "{{topic}}" comprehensively`,
-  "stage0-disaggregate": `A learner is scoping a course on "{{topic}}".
-
-Split "{{nodeTitle}}" ({{nodeDescription}}) into more specific, distinct alternatives at the same level.
-Current selections: {{selectedScope}}
-
-Return: { "nodes": [ { "id": "kebab-id", "title": "...", "description": "One sentence." } ] }
-- 2 to 5 nodes, non-overlapping, covering what "{{nodeTitle}}" covered
-- Do NOT include "{{nodeTitle}}" itself`,
-  "stage0-expand": `A learner is scoping a course on "{{topic}}".
-
-Add detailed subtopics under "{{nodeTitle}}" ({{nodeDescription}}).
-
-Return: { "children": [ { "id": "kebab-id", "title": "...", "description": "One sentence." } ] }
-- 3 to 6 children, fine-grained and learnable within "{{nodeTitle}}"`,
-  "stage0-suggest-related": `A learner is building a course on "{{topic}}".
-Existing topics: {{existingTopics}}
-Current selections: {{selectedScope}}
-
-Suggest 2\u20135 additional top-level topics NOT already listed.
-
-Return: { "topics": [ { "id": "kebab-id", "title": "...", "description": "One sentence explaining relevance." } ] }`,
-  "stage1-concepts": `You are a curriculum expert building a personalised course on "{{topic}}", scoped to: {{scopeSummary}}.
-
-Selected areas: {{scopeNodes}}
-
-{{contextSection}}
-
-Extract 15 to 25 foundational concepts and key terms the learner needs to master this scope.
-
-Return a JSON object:
-{
-  "concepts": [
-    {
-      "id": "unique-kebab-id",
-      "title": "Concept Name",
-      "description": "2\u20133 sentences explaining this concept and why it matters for the learner.",
-      "sourceRefs": []
-    }
-  ]
-}
-
-Requirements:
-- 15 to 25 concepts, ordered from foundational to advanced
-- Each concept must be DISTINCT and LEARNABLE \u2014 not just a vocabulary term
-- If source material was provided and a concept appears in it, list the source filename(s) in sourceRefs
-- If no source material was provided, sourceRefs must be an empty array
-- Cover prerequisites, core ideas, and practical applications within the scope`,
-  "stage3-curriculum": `You are designing a personalised course syllabus for "{{topic}}", scoped to: {{scopeSummary}}.
-
-Selected scope nodes: {{scopeNodes}}
-
-Foundational concepts and learner confidence:
-{{conceptProficiency}}
-
-{{contextSection}}
-
-Design a draft curriculum that adapts to the learner's current knowledge.
-
-Return a JSON object:
-{
-  "curriculum": {
-    "courseId": "{{courseId}}",
-    "title": "Course title",
-    "modules": [
-      {
-        "moduleId": "module-kebab-id",
-        "title": "Module title",
-        "description": "2-3 sentences explaining the module's role in the course.",
-        "lessons": [
-          {
-            "lessonId": "lesson-kebab-id",
-            "title": "Lesson title",
-            "description": "1-2 sentences explaining what the learner will achieve.",
-            "prerequisites": ["earlier-lesson-id"]
-          }
-        ]
-      }
-    ]
-  }
-}
-
-Requirements:
-- Create 3 to 6 modules with 2 to 5 lessons each
-- Order lessons from foundational to advanced within each module
-- Use the learner's proficiency scores:
-  - scores 1-2 mean teach thoroughly
-  - score 3 means concise but still included
-  - scores 4-5 mean condense or omit unless needed as a prerequisite
-- Every lesson must have a unique lessonId in kebab-case
-- prerequisites must only reference lessonIds that appear earlier in the curriculum
-- Keep the syllabus tightly scoped to "{{scopeSummary}}"
-- Prefer user sources when they are strong, but fill gaps with general knowledge when needed`,
-  "stage4-lesson": `You are writing one lesson in an Obsidian-native personalised course on "{{topic}}".
-
-Course title: {{courseTitle}}
-Module: {{moduleTitle}}
-Lesson: {{lessonTitle}}
-Lesson brief: {{lessonDescription}}
-Prerequisites already covered: {{prerequisiteSummary}}
-Generation mode: {{generationMode}}
-
-{{contextSection}}
-
-Write a complete lesson in Obsidian-flavoured Markdown.
-
-Return a JSON object:
-{
-  "lesson": {
-    "title": "Lesson title",
-    "summary": "1-2 sentence summary of the lesson.",
-    "difficulty": "intro",
-    "bodyMarkdown": "# Optional internal headings\\n\\nLesson content...",
-    "sourceRefs": ["optional-source.md"]
-  }
-}
-
-Requirements:
-- bodyMarkdown must be valid Markdown only, with no YAML frontmatter
-- Teach to the learner's current level implied by the curriculum brief
-- Include explanation, intuition, and at least one concrete example or worked scenario
-- Keep the lesson tightly scoped to the lesson brief and prerequisites
-- difficulty must be one of: intro, intermediate, advanced
-- sourceRefs should list filenames only when the lesson materially uses user-provided sources; otherwise return []
-- Do not include navigation links, breadcrumbs, or file metadata in bodyMarkdown`
-};
-async function loadPrompt(plugin, name) {
-  const override = plugin.settings.promptOverrides[name];
-  if (override?.trim())
-    return override.trim();
-  return DEFAULTS[name];
-}
-
 // src/writers/canvas.ts
 async function writeCanvas(plugin, curriculum, canvasPath, lessonPaths, modulePaths, courseIndexPath) {
   const nodes = [];
@@ -5982,9 +6148,9 @@ async function runStage4(plugin, courseId) {
       startedAt
     });
     new import_obsidian11.Notice(`Generating lesson ${completedLessonIds.length + 1} of ${totalLessons}: ${nextLesson.lesson.title}`);
-    const promptTemplate = await loadPrompt(plugin, "stage4-lesson");
+    const promptConfig = await plugin.loadPrompt("stage4-lesson");
     const raw = await plugin.llmService.callJson(
-      promptTemplate,
+      promptConfig.template,
       {
         topic: stage0.seedTopic,
         courseTitle: curriculum.title,
@@ -5994,7 +6160,8 @@ async function runStage4(plugin, courseId) {
         prerequisiteSummary: describePrerequisites(nextLesson.lesson, lessonOrder, generatedLessonSummaries),
         generationMode: context.mode,
         contextSection: buildContextSection3(context)
-      }
+      },
+      promptConfig.model
     );
     const validated = await validateAndRepair(
       raw,
@@ -6077,10 +6244,10 @@ async function ensureFolderTree(plugin, outputs) {
   Object.values(outputs.modulePaths).forEach((path) => directories.add(dirname(path)));
   Object.values(outputs.lessonPaths).forEach((path) => directories.add(dirname(path)));
   for (const dir of directories) {
-    await ensureFolder(plugin, dir);
+    await ensureFolder2(plugin, dir);
   }
 }
-async function ensureFolder(plugin, path) {
+async function ensureFolder2(plugin, path) {
   if (!path || path === ".")
     return;
   const exists = await plugin.app.vault.adapter.exists(path);
@@ -6632,6 +6799,7 @@ var DelvePlugin = class extends import_obsidian14.Plugin {
     try {
       await this.loadSettings();
       this.initServices();
+      await ensurePromptSettings(this);
       this.registerViews();
       this.registerCommands();
       this.addSettingTab(new DelveSettingsTab(this.app, this));
@@ -6650,10 +6818,8 @@ var DelvePlugin = class extends import_obsidian14.Plugin {
     const raw = await this.loadData() ?? {};
     raw.settings = this.settings;
     await this.saveData(raw);
-    this.llmService.updateConfig(
-      this.settings.openRouterApiKey,
-      this.settings.defaultModel
-    );
+    const runtimeConfig = await loadRuntimeConfig(this);
+    this.llmService.updateConfig(this.settings.openRouterApiKey, runtimeConfig.defaultModel);
   }
   async loadPrompt(name) {
     return loadPrompt(this, name);

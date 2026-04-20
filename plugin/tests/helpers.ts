@@ -76,6 +76,11 @@ export function makeMockPlugin() {
     },
     loadData: async () => null,
     saveData: async () => {},
-    loadPrompt: async (name: string) => `mock prompt for ${name}`,
+    loadPrompt: async (name: string) => ({
+      name,
+      model: 'anthropic/claude-3-5-sonnet',
+      template: `mock prompt for ${name}`,
+      path: `Delve Settings/Prompts/${name}.md`,
+    }),
   };
 }

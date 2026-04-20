@@ -1,5 +1,6 @@
 import { App, Notice, PluginSettingTab, Setting } from 'obsidian';
 import type DelvePlugin from '../main';
+import { ensurePromptSettings, getSettingsPaths, loadRuntimeConfig } from './prompts';
 
 export interface DelveSettings {
   openRouterApiKey: string;
@@ -40,20 +41,28 @@ export class DelveSettingsTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName('Model')
-      .setDesc('OpenRouter model ID (e.g. anthropic/claude-3-5-sonnet, google/gemini-flash-1.5).')
-      .addText(text =>
-        text
-          .setValue(this.plugin.settings.defaultModel)
-          .onChange(async value => {
-            this.plugin.settings.defaultModel = value.trim();
-            await this.plugin.saveSettings();
+      .setName('Vault settings folder')
+      .setDesc(`Prompts and non-secret Delve config now live in "${getSettingsPaths().config}" and "${getSettingsPaths().prompts}".`)
+      .addButton(btn =>
+        btn
+          .setButtonText('Create / refresh notes')
+          .onClick(async () => {
+            btn.setButtonText('Syncing…').setDisabled(true);
+            try {
+              await ensurePromptSettings(this.plugin);
+              const runtimeConfig = await loadRuntimeConfig(this.plugin);
+              new Notice(`Delve settings notes are ready. Default model: ${runtimeConfig.defaultModel}`);
+            } catch (e) {
+              new Notice(`Could not sync settings notes: ${(e as Error).message}`);
+            } finally {
+              btn.setButtonText('Create / refresh notes').setDisabled(false);
+            }
           })
       );
 
     new Setting(containerEl)
       .setName('Verify connection')
-      .setDesc('Check that your API key is valid and the model is reachable.')
+      .setDesc('Check that your API key is valid. Prompt-specific models are configured in the vault settings notes.')
       .addButton(btn =>
         btn
           .setButtonText('Test connection')
@@ -65,7 +74,8 @@ export class DelveSettingsTab extends PluginSettingTab {
             btn.setButtonText('Testing…').setDisabled(true);
             try {
               await this.plugin.llmService.listModels();
-              new Notice(`✓ Connected — model: ${this.plugin.settings.defaultModel}`);
+              const runtimeConfig = await loadRuntimeConfig(this.plugin);
+              new Notice(`✓ Connected — default model in vault config: ${runtimeConfig.defaultModel}`);
             } catch (e) {
               new Notice(`✗ Connection failed: ${(e as Error).message}`);
             } finally {
@@ -74,40 +84,10 @@ export class DelveSettingsTab extends PluginSettingTab {
           })
       );
 
-    containerEl.createEl('h3', { text: 'Prompt overrides' });
+    containerEl.createEl('h3', { text: 'Editable Prompt Notes' });
     containerEl.createEl('p', {
-      text: 'Override any stage prompt. Leave blank to use the built-in default.',
+      text: 'Edit prompt bodies and per-stage models directly in the notes inside the Delve Settings folder. Each prompt note stores its model in YAML properties.',
       cls: 'setting-item-description',
     });
-
-    const promptNames: Array<{ key: string; label: string }> = [
-      { key: 'stage0-taxonomy', label: 'Stage 0: Initial taxonomy' },
-      { key: 'stage0-disaggregate', label: 'Stage 0: Split node' },
-      { key: 'stage0-expand', label: 'Stage 0: Expand node' },
-      { key: 'stage0-suggest-related', label: 'Stage 0: Suggest related topics' },
-      { key: 'stage1-concepts', label: 'Stage 1: Concept extraction' },
-      { key: 'stage3-curriculum', label: 'Stage 3: Curriculum design' },
-      { key: 'stage4-lesson', label: 'Stage 4: Lesson generation' },
-    ];
-
-    for (const { key, label } of promptNames) {
-      new Setting(containerEl)
-        .setName(label)
-        .addTextArea(area => {
-          area
-            .setPlaceholder('Leave blank to use default…')
-            .setValue(this.plugin.settings.promptOverrides[key] ?? '')
-            .onChange(async value => {
-              if (value.trim()) {
-                this.plugin.settings.promptOverrides[key] = value;
-              } else {
-                delete this.plugin.settings.promptOverrides[key];
-              }
-              await this.plugin.saveSettings();
-            });
-          area.inputEl.rows = 6;
-          area.inputEl.style.width = '100%';
-        });
-    }
   }
 }

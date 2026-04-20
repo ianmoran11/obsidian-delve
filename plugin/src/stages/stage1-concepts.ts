@@ -24,7 +24,7 @@ export async function runStage1(
     if (!stage0) throw new Error('Stage 0 not complete — run the topic explorer first.');
 
     const context = await plugin.contextService.build();
-    const promptTemplate = await plugin.loadPrompt('stage1-concepts');
+    const promptConfig = await plugin.loadPrompt('stage1-concepts');
 
     const scopeNodeTitles = stage0.selectedScope
       .map(id => findNodeTitle(stage0.taxonomy, id))
@@ -32,13 +32,14 @@ export async function runStage1(
       .join(', ');
 
     const raw = await plugin.llmService.callJson<{ concepts: Concept[] }>(
-      promptTemplate,
+      promptConfig.template,
       {
         topic: stage0.seedTopic,
         scopeSummary: stage0.scopeSummary,
         scopeNodes: scopeNodeTitles || stage0.scopeSummary,
         contextSection: buildContextSection(context),
-      }
+      },
+      promptConfig.model
     );
 
     const validated = await validateAndRepair(

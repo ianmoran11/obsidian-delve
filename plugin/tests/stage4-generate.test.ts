@@ -209,7 +209,8 @@ describe('stage4: runStage4', () => {
       expect.objectContaining({
         lessonTitle: 'Limits',
         prerequisiteSummary: 'Functors: A lesson on functors.',
-      })
+      }),
+      'anthropic/claude-3-5-sonnet'
     );
     expect(fileWrites.find(call => call.path.endsWith('02-limits.md'))?.content).toContain(
       'difficulty: intermediate'

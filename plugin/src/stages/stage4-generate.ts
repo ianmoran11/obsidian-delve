@@ -11,7 +11,6 @@ import type {
 } from '../interfaces';
 import type { ContextPayload, SourceMode } from '../services/context';
 import { VAULT_PATHS } from '../constants';
-import { loadPrompt } from '../prompts';
 import { Stage4LessonResponseSchema, validateAndRepair } from '../services/validator';
 import { writeCanvas } from '../writers/canvas';
 import { buildFrontmatter } from '../writers/frontmatter';
@@ -80,9 +79,9 @@ export async function runStage4(
 
     new Notice(`Generating lesson ${completedLessonIds.length + 1} of ${totalLessons}: ${nextLesson.lesson.title}`);
 
-    const promptTemplate = await loadPrompt(plugin, 'stage4-lesson');
+    const promptConfig = await plugin.loadPrompt('stage4-lesson');
     const raw = await plugin.llmService.callJson<{ lesson: LessonDraft }>(
-      promptTemplate,
+      promptConfig.template,
       {
         topic: stage0.seedTopic,
         courseTitle: curriculum.title,
@@ -92,7 +91,8 @@ export async function runStage4(
         prerequisiteSummary: describePrerequisites(nextLesson.lesson, lessonOrder, generatedLessonSummaries),
         generationMode: context.mode,
         contextSection: buildContextSection(context),
-      }
+      },
+      promptConfig.model
     );
 
     const validated = await validateAndRepair(

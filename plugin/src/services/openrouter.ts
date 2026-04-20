@@ -1,8 +1,8 @@
 import { requestUrl, RequestUrlParam } from 'obsidian';
 
 export interface LlmService {
-  callJson<T>(prompt: string, variables: Record<string, string>): Promise<T>;
-  callText(prompt: string, variables: Record<string, string>): Promise<string>;
+  callJson<T>(prompt: string, variables: Record<string, string>, model?: string): Promise<T>;
+  callText(prompt: string, variables: Record<string, string>, model?: string): Promise<string>;
   listModels(): Promise<string[]>;
 }
 
@@ -17,15 +17,23 @@ export class OpenRouterService implements LlmService {
     this.model = model;
   }
 
-  async callJson<T>(prompt: string, variables: Record<string, string>): Promise<T> {
+  async callJson<T>(
+    prompt: string,
+    variables: Record<string, string>,
+    model?: string
+  ): Promise<T> {
     const rendered = renderPrompt(prompt, variables);
-    const text = await this.callWithRetry(rendered, 'json_object');
+    const text = await this.callWithRetry(rendered, 'json_object', model);
     return parseJsonResponse<T>(text);
   }
 
-  async callText(prompt: string, variables: Record<string, string>): Promise<string> {
+  async callText(
+    prompt: string,
+    variables: Record<string, string>,
+    model?: string
+  ): Promise<string> {
     const rendered = renderPrompt(prompt, variables);
-    return this.callWithRetry(rendered, 'text');
+    return this.callWithRetry(rendered, 'text', model);
   }
 
   async listModels(): Promise<string[]> {
@@ -46,14 +54,15 @@ export class OpenRouterService implements LlmService {
 
   private async callWithRetry(
     content: string,
-    responseFormat: 'json_object' | 'text'
+    responseFormat: 'json_object' | 'text',
+    model?: string
   ): Promise<string> {
     const delays = [1000, 2000, 4000];
     let lastError: Error = new Error('Unknown LLM error');
 
     for (let attempt = 0; attempt <= delays.length; attempt++) {
       try {
-        return await this.callOnce(content, responseFormat);
+        return await this.callOnce(content, responseFormat, model);
       } catch (e) {
         lastError = e as Error;
         if (attempt < delays.length) {
@@ -66,10 +75,11 @@ export class OpenRouterService implements LlmService {
 
   private async callOnce(
     content: string,
-    responseFormat: 'json_object' | 'text'
+    responseFormat: 'json_object' | 'text',
+    model?: string
   ): Promise<string> {
     const body: Record<string, unknown> = {
-      model: this.model,
+      model: model || this.model,
       messages: [{ role: 'user', content }],
     };
     if (responseFormat === 'json_object') {

@@ -30,10 +30,11 @@ export async function runStage0(
   try {
     new Notice('Generating topic taxonomy…');
 
-    const promptTemplate = await plugin.loadPrompt('stage0-taxonomy');
+    const promptConfig = await plugin.loadPrompt('stage0-taxonomy');
     const raw = await plugin.llmService.callJson<{ taxonomy: TaxonomyNode[] }>(
-      promptTemplate,
-      { topic: seedTopic }
+      promptConfig.template,
+      { topic: seedTopic },
+      promptConfig.model
     );
 
     const validated = await validateAndRepair(
@@ -73,13 +74,17 @@ export async function disaggregateNode(
   node: TaxonomyNode,
   selectedScope: string[]
 ): Promise<TaxonomyNode[]> {
-  const prompt = await plugin.loadPrompt('stage0-disaggregate');
-  const raw = await plugin.llmService.callJson<{ nodes: TaxonomyNode[] }>(prompt, {
-    topic: seedTopic,
-    nodeTitle: node.title,
-    nodeDescription: node.description,
-    selectedScope: selectedScope.join(', ') || 'none selected yet',
-  });
+  const promptConfig = await plugin.loadPrompt('stage0-disaggregate');
+  const raw = await plugin.llmService.callJson<{ nodes: TaxonomyNode[] }>(
+    promptConfig.template,
+    {
+      topic: seedTopic,
+      nodeTitle: node.title,
+      nodeDescription: node.description,
+      selectedScope: selectedScope.join(', ') || 'none selected yet',
+    },
+    promptConfig.model
+  );
   const validated = await validateAndRepair(
     raw, DisaggregateResponseSchema, plugin.llmService,
     'Return { nodes: [...] } with 2–5 TaxonomyNode items each having id, title, description.'
@@ -92,12 +97,16 @@ export async function expandNode(
   seedTopic: string,
   node: TaxonomyNode
 ): Promise<TaxonomyNode[]> {
-  const prompt = await plugin.loadPrompt('stage0-expand');
-  const raw = await plugin.llmService.callJson<{ children: TaxonomyNode[] }>(prompt, {
-    topic: seedTopic,
-    nodeTitle: node.title,
-    nodeDescription: node.description,
-  });
+  const promptConfig = await plugin.loadPrompt('stage0-expand');
+  const raw = await plugin.llmService.callJson<{ children: TaxonomyNode[] }>(
+    promptConfig.template,
+    {
+      topic: seedTopic,
+      nodeTitle: node.title,
+      nodeDescription: node.description,
+    },
+    promptConfig.model
+  );
   const validated = await validateAndRepair(
     raw, ExpandResponseSchema, plugin.llmService,
     'Return { children: [...] } with 3–6 TaxonomyNode items each having id, title, description.'
@@ -111,13 +120,17 @@ export async function suggestRelated(
   existingTaxonomy: TaxonomyNode[],
   selectedScope: string[]
 ): Promise<TaxonomyNode[]> {
-  const prompt = await plugin.loadPrompt('stage0-suggest-related');
+  const promptConfig = await plugin.loadPrompt('stage0-suggest-related');
   const existingTitles = existingTaxonomy.map(n => n.title).join(', ');
-  const raw = await plugin.llmService.callJson<{ topics: TaxonomyNode[] }>(prompt, {
-    topic: seedTopic,
-    existingTopics: existingTitles,
-    selectedScope: selectedScope.join(', ') || 'none selected yet',
-  });
+  const raw = await plugin.llmService.callJson<{ topics: TaxonomyNode[] }>(
+    promptConfig.template,
+    {
+      topic: seedTopic,
+      existingTopics: existingTitles,
+      selectedScope: selectedScope.join(', ') || 'none selected yet',
+    },
+    promptConfig.model
+  );
   const validated = await validateAndRepair(
     raw, SuggestRelatedResponseSchema, plugin.llmService,
     'Return { topics: [...] } with 2–5 TaxonomyNode items not already in the existing list.'

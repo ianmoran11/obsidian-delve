@@ -53,9 +53,9 @@ export async function runStage3(
   try {
     new Notice('Designing curriculum draft…');
 
-    const promptTemplate = await plugin.loadPrompt('stage3-curriculum');
+    const promptConfig = await plugin.loadPrompt('stage3-curriculum');
     const raw = await plugin.llmService.callJson<{ curriculum: Curriculum }>(
-      promptTemplate,
+      promptConfig.template,
       {
         courseId,
         topic: stage0.seedTopic,
@@ -63,7 +63,8 @@ export async function runStage3(
         scopeNodes: buildScopeNodes(stage0.taxonomy, stage0.selectedScope) || stage0.scopeSummary,
         conceptProficiency: buildConceptProficiency(stage1.concepts, stage2.proficiencyMap),
         contextSection: buildContextSection(context),
-      }
+      },
+      promptConfig.model
     );
 
     const validated = await validateAndRepair(

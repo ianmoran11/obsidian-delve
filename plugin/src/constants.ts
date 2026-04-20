@@ -7,6 +7,8 @@ export const VAULT_PATHS = {
   MARKDOWN_SOURCES: '2-Markdown_Sources',
   SYNTHESIZED: '3-Synthesized',
   CURRICULUM: '4-Curriculum',
+  SETTINGS: 'Delve Settings',
+  PROMPTS: 'Delve Settings/Prompts',
 } as const;
 
 export const LOCK_FILE = '.delve.lock';

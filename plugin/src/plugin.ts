@@ -16,7 +16,7 @@ import {
   DIAGNOSTIC_VIEW_TYPE,
   SYLLABUS_VIEW_TYPE,
 } from './constants';
-import { loadPrompt, PromptName } from './prompts';
+import { ensurePromptSettings, loadPrompt, loadRuntimeConfig, PromptConfig, PromptName } from './prompts';
 import { runStage0 } from './stages/stage0-topic';
 import { runStage1 } from './stages/stage1-concepts';
 import { resumeStage3, runStage3 } from './stages/stage3-curriculum';
@@ -33,6 +33,7 @@ export default class DelvePlugin extends Plugin {
     try {
       await this.loadSettings();
       this.initServices();
+      await ensurePromptSettings(this);
       this.registerViews();
       this.registerCommands();
       this.addSettingTab(new DelveSettingsTab(this.app, this));
@@ -53,13 +54,11 @@ export default class DelvePlugin extends Plugin {
     const raw = (await this.loadData()) ?? {};
     raw.settings = this.settings;
     await this.saveData(raw);
-    this.llmService.updateConfig(
-      this.settings.openRouterApiKey,
-      this.settings.defaultModel
-    );
+    const runtimeConfig = await loadRuntimeConfig(this);
+    this.llmService.updateConfig(this.settings.openRouterApiKey, runtimeConfig.defaultModel);
   }
 
-  async loadPrompt(name: PromptName): Promise<string> {
+  async loadPrompt(name: PromptName): Promise<PromptConfig> {
     return loadPrompt(this, name);
   }
 
