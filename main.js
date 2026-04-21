@@ -1,0 +1,6951 @@
+"use strict";
+var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __defNormalProp = (obj, key, value) => key in obj ? __defProp(obj, key, { enumerable: true, configurable: true, writable: true, value }) : obj[key] = value;
+var __export = (target, all) => {
+  for (var name in all)
+    __defProp(target, name, { get: all[name], enumerable: true });
+};
+var __copyProps = (to, from, except, desc) => {
+  if (from && typeof from === "object" || typeof from === "function") {
+    for (let key of __getOwnPropNames(from))
+      if (!__hasOwnProp.call(to, key) && key !== except)
+        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+  }
+  return to;
+};
+var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+var __publicField = (obj, key, value) => {
+  __defNormalProp(obj, typeof key !== "symbol" ? key + "" : key, value);
+  return value;
+};
+
+// main.ts
+var main_exports = {};
+__export(main_exports, {
+  default: () => DelvePlugin
+});
+module.exports = __toCommonJS(main_exports);
+
+// src/plugin.ts
+var import_obsidian14 = require("obsidian");
+
+// src/settings.ts
+var import_obsidian = require("obsidian");
+
+// src/constants.ts
+var VAULT_PATHS = {
+  RAW_SOURCES: "1-Raw_Sources",
+  MARKDOWN_SOURCES: "2-Markdown_Sources",
+  SYNTHESIZED: "3-Synthesized",
+  CURRICULUM: "4-Curriculum",
+  SETTINGS: "Delve Settings",
+  PROMPTS: "Delve Settings/Prompts"
+};
+var LOCK_FILE = ".delve.lock";
+var TAXONOMY_VIEW_TYPE = "delve-taxonomy-view";
+var CONCEPTS_VIEW_TYPE = "delve-concepts-view";
+var DIAGNOSTIC_VIEW_TYPE = "delve-diagnostic-view";
+var SYLLABUS_VIEW_TYPE = "delve-syllabus-editor-view";
+
+// src/prompts/index.ts
+var DEFAULT_MODEL = "google/gemini-3-flash-preview";
+var CONFIG_NOTE_PATH = `${VAULT_PATHS.SETTINGS}/Delve Config.md`;
+var PROMPTS = {
+  "stage0-taxonomy": {
+    title: "Stage 0 - Taxonomy",
+    filename: "Stage 0 - Taxonomy.md",
+    description: "Generates the first scoped taxonomy for a broad topic.",
+    defaultModel: DEFAULT_MODEL,
+    template: `You are a curriculum expert. Given the broad topic "{{topic}}", generate a comprehensive hierarchical taxonomy of the subject area.
+
+Return a JSON object with this EXACT structure:
+{
+  "taxonomy": [
+    {
+      "id": "unique-kebab-case-id",
+      "title": "Domain Title",
+      "description": "One sentence describing this domain.",
+      "children": [
+        { "id": "unique-child-id", "title": "Subtopic", "description": "One sentence.", "children": [] }
+      ]
+    }
+  ]
+}
+
+Requirements:
+- 3 to 5 top-level domains, 3 to 6 subtopics per domain, maximum 3 levels deep
+- Every node MUST have: id (unique kebab-case), title, description
+- Cover the full breadth of "{{topic}}" comprehensively`
+  },
+  "stage0-disaggregate": {
+    title: "Stage 0 - Disaggregate Node",
+    filename: "Stage 0 - Disaggregate Node.md",
+    description: "Splits one scoped node into more specific alternatives.",
+    defaultModel: DEFAULT_MODEL,
+    template: `A learner is scoping a course on "{{topic}}".
+
+Split "{{nodeTitle}}" ({{nodeDescription}}) into more specific, distinct alternatives at the same level.
+Current selections: {{selectedScope}}
+
+Return: { "nodes": [ { "id": "kebab-id", "title": "...", "description": "One sentence." } ] }
+- 2 to 5 nodes, non-overlapping, covering what "{{nodeTitle}}" covered
+- Do NOT include "{{nodeTitle}}" itself`
+  },
+  "stage0-expand": {
+    title: "Stage 0 - Expand Node",
+    filename: "Stage 0 - Expand Node.md",
+    description: "Adds more granular children under a chosen taxonomy node.",
+    defaultModel: DEFAULT_MODEL,
+    template: `A learner is scoping a course on "{{topic}}".
+
+Add detailed subtopics under "{{nodeTitle}}" ({{nodeDescription}}).
+
+Return: { "children": [ { "id": "kebab-id", "title": "...", "description": "One sentence." } ] }
+- 3 to 6 children, fine-grained and learnable within "{{nodeTitle}}"`
+  },
+  "stage0-suggest-related": {
+    title: "Stage 0 - Suggest Related Topics",
+    filename: "Stage 0 - Suggest Related Topics.md",
+    description: "Suggests missing top-level topics related to the current scope.",
+    defaultModel: DEFAULT_MODEL,
+    template: `A learner is building a course on "{{topic}}".
+Existing topics: {{existingTopics}}
+Current selections: {{selectedScope}}
+
+Suggest 2\u20135 additional top-level topics NOT already listed.
+
+Return: { "topics": [ { "id": "kebab-id", "title": "...", "description": "One sentence explaining relevance." } ] }`
+  },
+  "stage1-concepts": {
+    title: "Stage 1 - Concept Extraction",
+    filename: "Stage 1 - Concept Extraction.md",
+    description: "Extracts the foundational concepts for the chosen scope.",
+    defaultModel: DEFAULT_MODEL,
+    template: `You are a curriculum expert building a personalised course on "{{topic}}", scoped to: {{scopeSummary}}.
+
+Selected areas: {{scopeNodes}}
+
+{{contextSection}}
+
+Extract 15 to 25 foundational concepts and key terms the learner needs to master this scope.
+
+Return a JSON object:
+{
+  "concepts": [
+    {
+      "id": "unique-kebab-id",
+      "title": "Concept Name",
+      "description": "2\u20133 sentences explaining this concept and why it matters for the learner.",
+      "sourceRefs": []
+    }
+  ]
+}
+
+Requirements:
+- 15 to 25 concepts, ordered from foundational to advanced
+- Each concept must be DISTINCT and LEARNABLE \u2014 not just a vocabulary term
+- If source material was provided and a concept appears in it, list the source filename(s) in sourceRefs
+- If no source material was provided, sourceRefs must be an empty array
+- Cover prerequisites, core ideas, and practical applications within the scope`
+  },
+  "stage3-curriculum": {
+    title: "Stage 3 - Curriculum Design",
+    filename: "Stage 3 - Curriculum Design.md",
+    description: "Designs the editable syllabus from scope, concepts, and self-assessment.",
+    defaultModel: DEFAULT_MODEL,
+    template: `You are designing a personalised course syllabus for "{{topic}}", scoped to: {{scopeSummary}}.
+
+Selected scope nodes: {{scopeNodes}}
+
+Foundational concepts and learner confidence:
+{{conceptProficiency}}
+
+{{contextSection}}
+
+Design a draft curriculum that adapts to the learner's current knowledge.
+
+Return a JSON object:
+{
+  "curriculum": {
+    "courseId": "{{courseId}}",
+    "title": "Course title",
+    "modules": [
+      {
+        "moduleId": "module-kebab-id",
+        "title": "Module title",
+        "description": "2-3 sentences explaining the module's role in the course.",
+        "lessons": [
+          {
+            "lessonId": "lesson-kebab-id",
+            "title": "Lesson title",
+            "description": "1-2 sentences explaining what the learner will achieve.",
+            "prerequisites": ["earlier-lesson-id"]
+          }
+        ]
+      }
+    ]
+  }
+}
+
+Requirements:
+- Create 3 to 6 modules with 2 to 5 lessons each
+- Order lessons from foundational to advanced within each module
+- Use the learner's proficiency scores:
+  - scores 1-2 mean teach thoroughly
+  - score 3 means concise but still included
+  - scores 4-5 mean condense or omit unless needed as a prerequisite
+- Every lesson must have a unique lessonId in kebab-case
+- prerequisites must only reference lessonIds that appear earlier in the curriculum
+- Keep the syllabus tightly scoped to "{{scopeSummary}}"
+- Prefer user sources when they are strong, but fill gaps with general knowledge when needed`
+  },
+  "stage4-lesson": {
+    title: "Stage 4 - Lesson Generation",
+    filename: "Stage 4 - Lesson Generation.md",
+    description: "Writes one lesson at a time into the curriculum vault structure.",
+    defaultModel: DEFAULT_MODEL,
+    template: `You are writing one lesson in an Obsidian-native personalised course on "{{topic}}".
+
+Course title: {{courseTitle}}
+Module: {{moduleTitle}}
+Lesson: {{lessonTitle}}
+Lesson brief: {{lessonDescription}}
+Prerequisites already covered: {{prerequisiteSummary}}
+Generation mode: {{generationMode}}
+
+{{contextSection}}
+
+Write a complete lesson in Obsidian-flavoured Markdown.
+
+Return a JSON object:
+{
+  "lesson": {
+    "title": "Lesson title",
+    "summary": "1-2 sentence summary of the lesson.",
+    "difficulty": "intro",
+    "bodyMarkdown": "# Optional internal headings\\n\\nLesson content...",
+    "sourceRefs": ["optional-source.md"]
+  }
+}
+
+Requirements:
+- bodyMarkdown must be valid Markdown only, with no YAML frontmatter
+- Teach to the learner's current level implied by the curriculum brief
+- Include explanation, intuition, and at least one concrete example or worked scenario
+- Keep the lesson tightly scoped to the lesson brief and prerequisites
+- difficulty must be one of: intro, intermediate, advanced
+- sourceRefs should list filenames only when the lesson materially uses user-provided sources; otherwise return []
+- Do not include navigation links, breadcrumbs, or file metadata in bodyMarkdown`
+  }
+};
+async function ensurePromptSettings(plugin) {
+  await ensureFolder(plugin, VAULT_PATHS.SETTINGS);
+  await ensureFolder(plugin, VAULT_PATHS.PROMPTS);
+  const runtimeConfig = await ensureRuntimeConfig(plugin);
+  for (const [name, definition] of Object.entries(PROMPTS)) {
+    const legacyOverride = plugin.settings.promptOverrides[name];
+    const notePath = getPromptPath(name);
+    const exists = await plugin.app.vault.adapter.exists(notePath);
+    if (exists)
+      continue;
+    const content = buildPromptNote(definition, legacyOverride?.trim() || definition.template, runtimeConfig.defaultModel);
+    await plugin.app.vault.adapter.write(notePath, content);
+  }
+}
+async function loadPrompt(plugin, name) {
+  await ensurePromptSettings(plugin);
+  const runtimeConfig = await loadRuntimeConfig(plugin);
+  const notePath = getPromptPath(name);
+  const raw = await plugin.app.vault.adapter.read(notePath);
+  const parsed = parseNote(raw);
+  const definition = PROMPTS[name];
+  return {
+    name,
+    model: normalizeScalar(parsed.frontmatter.model) || runtimeConfig.defaultModel || definition.defaultModel,
+    template: parsed.body.trim() || definition.template,
+    path: notePath
+  };
+}
+async function loadRuntimeConfig(plugin) {
+  await ensureRuntimeConfig(plugin);
+  return loadRuntimeConfigWithoutEnsure(plugin);
+}
+function getPromptPath(name) {
+  return `${VAULT_PATHS.PROMPTS}/${PROMPTS[name].filename}`;
+}
+function getSettingsPaths() {
+  return {
+    config: CONFIG_NOTE_PATH,
+    prompts: VAULT_PATHS.PROMPTS
+  };
+}
+async function ensureRuntimeConfig(plugin) {
+  const exists = await plugin.app.vault.adapter.exists(CONFIG_NOTE_PATH);
+  if (!exists) {
+    const content = buildConfigNote(plugin.settings.defaultModel || DEFAULT_MODEL);
+    await plugin.app.vault.adapter.write(CONFIG_NOTE_PATH, content);
+  }
+  return loadRuntimeConfigWithoutEnsure(plugin);
+}
+async function loadRuntimeConfigWithoutEnsure(plugin) {
+  const raw = await plugin.app.vault.adapter.read(CONFIG_NOTE_PATH);
+  const parsed = parseNote(raw);
+  return {
+    defaultModel: normalizeScalar(parsed.frontmatter.defaultModel) || plugin.settings.defaultModel || DEFAULT_MODEL
+  };
+}
+async function ensureFolder(plugin, path) {
+  const exists = await plugin.app.vault.adapter.exists(path);
+  if (!exists) {
+    await plugin.app.vault.adapter.mkdir?.(path);
+  }
+}
+function buildConfigNote(defaultModel) {
+  return [
+    "---",
+    `defaultModel: ${escapeYamlValue(defaultModel)}`,
+    "---",
+    "",
+    "# Delve Config",
+    "",
+    "This note stores editable Delve configuration that should live in the vault rather than plugin data.",
+    "",
+    "- `defaultModel`: fallback OpenRouter model used when a prompt note does not set its own `model` property.",
+    "",
+    "The API key stays in the Delve plugin settings panel and is not written into the vault.",
+    ""
+  ].join("\n");
+}
+function buildPromptNote(definition, template, model) {
+  return [
+    "---",
+    `title: ${escapeYamlValue(definition.title)}`,
+    `description: ${escapeYamlValue(definition.description)}`,
+    `model: ${escapeYamlValue(model || definition.defaultModel)}`,
+    "---",
+    "",
+    template.trim(),
+    ""
+  ].join("\n");
+}
+function parseNote(content) {
+  const normalized = content.replace(/\r\n/g, "\n");
+  if (!normalized.startsWith("---\n")) {
+    return { frontmatter: {}, body: normalized };
+  }
+  const end = normalized.indexOf("\n---\n", 4);
+  if (end === -1) {
+    return { frontmatter: {}, body: normalized };
+  }
+  const frontmatterBlock = normalized.slice(4, end);
+  const body = normalized.slice(end + 5).trim();
+  const frontmatter = frontmatterBlock.split("\n").map((line) => line.trim()).filter(Boolean).reduce((acc, line) => {
+    const separator = line.indexOf(":");
+    if (separator === -1)
+      return acc;
+    const key = line.slice(0, separator).trim();
+    const value = line.slice(separator + 1).trim().replace(/^["']|["']$/g, "");
+    if (key)
+      acc[key] = value;
+    return acc;
+  }, {});
+  return { frontmatter, body };
+}
+function normalizeScalar(value) {
+  return value?.trim() ?? "";
+}
+function escapeYamlValue(value) {
+  return JSON.stringify(value);
+}
+
+// src/settings.ts
+var DEFAULT_SETTINGS = {
+  openRouterApiKey: "",
+  defaultModel: "google/gemini-3-flash-preview",
+  promptOverrides: {}
+};
+var DelveSettingsTab = class extends import_obsidian.PluginSettingTab {
+  constructor(app, plugin) {
+    super(app, plugin);
+    __publicField(this, "plugin");
+    this.plugin = plugin;
+  }
+  display() {
+    const { containerEl } = this;
+    containerEl.empty();
+    containerEl.createEl("h2", { text: "Delve" });
+    new import_obsidian.Setting(containerEl).setName("OpenRouter API key").setDesc("Your OpenRouter API key. Get one at openrouter.ai.").addText(
+      (text) => text.setPlaceholder("sk-or-...").setValue(this.plugin.settings.openRouterApiKey).onChange(async (value) => {
+        this.plugin.settings.openRouterApiKey = value.trim();
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian.Setting(containerEl).setName("Vault settings folder").setDesc(`Prompts and non-secret Delve config now live in "${getSettingsPaths().config}" and "${getSettingsPaths().prompts}".`).addButton(
+      (btn) => btn.setButtonText("Create / refresh notes").onClick(async () => {
+        btn.setButtonText("Syncing\u2026").setDisabled(true);
+        try {
+          await ensurePromptSettings(this.plugin);
+          const runtimeConfig = await loadRuntimeConfig(this.plugin);
+          new import_obsidian.Notice(`Delve settings notes are ready. Default model: ${runtimeConfig.defaultModel}`);
+        } catch (e) {
+          new import_obsidian.Notice(`Could not sync settings notes: ${e.message}`);
+        } finally {
+          btn.setButtonText("Create / refresh notes").setDisabled(false);
+        }
+      })
+    );
+    new import_obsidian.Setting(containerEl).setName("Verify connection").setDesc("Check that your API key is valid. Prompt-specific models are configured in the vault settings notes.").addButton(
+      (btn) => btn.setButtonText("Test connection").onClick(async () => {
+        if (!this.plugin.settings.openRouterApiKey) {
+          new import_obsidian.Notice("Enter an API key first.");
+          return;
+        }
+        btn.setButtonText("Testing\u2026").setDisabled(true);
+        try {
+          await this.plugin.llmService.listModels();
+          const runtimeConfig = await loadRuntimeConfig(this.plugin);
+          new import_obsidian.Notice(`\u2713 Connected \u2014 default model in vault config: ${runtimeConfig.defaultModel}`);
+        } catch (e) {
+          new import_obsidian.Notice(`\u2717 Connection failed: ${e.message}`);
+        } finally {
+          btn.setButtonText("Test connection").setDisabled(false);
+        }
+      })
+    );
+    containerEl.createEl("h3", { text: "Editable Prompt Notes" });
+    containerEl.createEl("p", {
+      text: "Edit prompt bodies and per-stage models directly in the notes inside the Delve Settings folder. Each prompt note stores its model in YAML properties.",
+      cls: "setting-item-description"
+    });
+  }
+};
+
+// src/services/openrouter.ts
+var import_obsidian2 = require("obsidian");
+var OpenRouterService = class {
+  constructor(apiKey, model) {
+    this.apiKey = apiKey;
+    this.model = model;
+    __publicField(this, "modelCache", null);
+    __publicField(this, "MODEL_CACHE_TTL_MS", 5 * 60 * 1e3);
+  }
+  updateConfig(apiKey, model) {
+    this.apiKey = apiKey;
+    this.model = model;
+  }
+  async callJson(prompt, variables, model) {
+    const rendered = renderPrompt(prompt, variables);
+    const text = await this.callWithRetry(rendered, "json_object", model);
+    return parseJsonResponse(text);
+  }
+  async callText(prompt, variables, model) {
+    const rendered = renderPrompt(prompt, variables);
+    return this.callWithRetry(rendered, "text", model);
+  }
+  async listModels() {
+    const now = Date.now();
+    if (this.modelCache && now - this.modelCache.fetchedAt < this.MODEL_CACHE_TTL_MS) {
+      return this.modelCache.models;
+    }
+    const resp = await (0, import_obsidian2.requestUrl)({
+      url: "https://openrouter.ai/api/v1/models",
+      method: "GET",
+      headers: { Authorization: `Bearer ${this.apiKey}` }
+    });
+    const data = resp.json;
+    const models = data.data.map((m) => m.id);
+    this.modelCache = { models, fetchedAt: now };
+    return models;
+  }
+  async callWithRetry(content, responseFormat, model) {
+    const delays = [1e3, 2e3, 4e3];
+    let lastError = new Error("Unknown LLM error");
+    for (let attempt = 0; attempt <= delays.length; attempt++) {
+      try {
+        return await this.callOnce(content, responseFormat, model);
+      } catch (e) {
+        lastError = e;
+        if (attempt < delays.length) {
+          await sleep(delays[attempt]);
+        }
+      }
+    }
+    throw lastError;
+  }
+  async callOnce(content, responseFormat, model) {
+    const body = {
+      model: model || this.model,
+      messages: [{ role: "user", content }]
+    };
+    if (responseFormat === "json_object") {
+      body.response_format = { type: "json_object" };
+    }
+    const params = {
+      url: "https://openrouter.ai/api/v1/chat/completions",
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${this.apiKey}`,
+        "Content-Type": "application/json",
+        "HTTP-Referer": "obsidian://delve",
+        "X-Title": "Delve"
+      },
+      body: JSON.stringify(body),
+      throw: false
+    };
+    const resp = await (0, import_obsidian2.requestUrl)(params);
+    if (resp.status !== 200) {
+      throw new Error(`OpenRouter ${resp.status}: ${resp.text.slice(0, 200)}`);
+    }
+    const json = resp.json;
+    const result = json.choices?.[0]?.message?.content;
+    if (result === void 0) {
+      throw new Error("OpenRouter returned empty choices");
+    }
+    return result;
+  }
+};
+function renderPrompt(template, vars) {
+  return template.replace(/\{\{(\w+)\}\}/g, (_, k) => vars[k] ?? `{{${k}}}`);
+}
+function parseJsonResponse(text) {
+  const candidates = [
+    text.trim(),
+    stripCodeFence(text).trim(),
+    extractJsonObject(text)?.trim(),
+    extractJsonArray(text)?.trim()
+  ].filter((candidate) => Boolean(candidate));
+  for (const candidate of candidates) {
+    try {
+      return JSON.parse(candidate);
+    } catch {
+      continue;
+    }
+  }
+  throw new Error(`Model returned non-JSON output: ${text.slice(0, 200)}`);
+}
+function stripCodeFence(text) {
+  return text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+}
+function extractJsonObject(text) {
+  return extractBalanced(text, "{", "}");
+}
+function extractJsonArray(text) {
+  return extractBalanced(text, "[", "]");
+}
+function extractBalanced(text, openChar, closeChar) {
+  const start = text.indexOf(openChar);
+  if (start === -1)
+    return null;
+  let depth = 0;
+  let inString = false;
+  let escaping = false;
+  for (let i = start; i < text.length; i++) {
+    const char = text[i];
+    if (escaping) {
+      escaping = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaping = true;
+      continue;
+    }
+    if (char === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString)
+      continue;
+    if (char === openChar)
+      depth++;
+    if (char === closeChar)
+      depth--;
+    if (depth === 0) {
+      return text.slice(start, i + 1);
+    }
+  }
+  return null;
+}
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// src/services/cache.ts
+var CacheService = class {
+  constructor(plugin) {
+    this.plugin = plugin;
+  }
+  async readAll() {
+    const raw = await this.plugin.loadData();
+    return {
+      settings: raw?.settings,
+      courses: raw?.courses ?? {},
+      meta: raw?.meta ?? {}
+    };
+  }
+  async readCourse(courseId) {
+    const data = await this.readAll();
+    return data.courses[courseId] ?? {};
+  }
+  async readStage(courseId, stage) {
+    const cache = await this.readCourse(courseId);
+    return cache[stage];
+  }
+  async writeStage(courseId, stage, payload) {
+    const data = await this.readAll();
+    if (!data.courses[courseId])
+      data.courses[courseId] = {};
+    data.courses[courseId][stage] = payload;
+    await this.plugin.saveData(data);
+  }
+  async writeMeta(meta) {
+    const data = await this.readAll();
+    data.meta[meta.courseId] = meta;
+    await this.plugin.saveData(data);
+  }
+  async listCourses() {
+    const data = await this.readAll();
+    return Object.values(data.meta);
+  }
+  async clearCourse(courseId) {
+    const data = await this.readAll();
+    delete data.courses[courseId];
+    delete data.meta[courseId];
+    await this.plugin.saveData(data);
+  }
+};
+
+// src/services/lock.ts
+var LockService = class {
+  constructor(vault) {
+    this.vault = vault;
+  }
+  async acquire(courseId, stage) {
+    const lock = {
+      courseId,
+      stage,
+      timestamp: (/* @__PURE__ */ new Date()).toISOString()
+    };
+    await this.vault.adapter.write(LOCK_FILE, JSON.stringify(lock));
+  }
+  async release() {
+    try {
+      await this.vault.adapter.remove(LOCK_FILE);
+    } catch {
+    }
+  }
+  async read() {
+    try {
+      const exists = await this.vault.adapter.exists(LOCK_FILE);
+      if (!exists)
+        return null;
+      const raw = await this.vault.adapter.read(LOCK_FILE);
+      return JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+  async isLocked() {
+    return await this.read() !== null;
+  }
+};
+
+// src/services/context.ts
+var ContextService = class {
+  constructor(vault) {
+    this.vault = vault;
+  }
+  async build() {
+    const folder = this.vault.getAbstractFileByPath(VAULT_PATHS.MARKDOWN_SOURCES);
+    if (!folder) {
+      return { mode: "knowledge-only", content: "", fileCount: 0 };
+    }
+    const files = this.vault.getFiles().filter(
+      (f) => f.path.startsWith(VAULT_PATHS.MARKDOWN_SOURCES + "/") && f.extension === "md"
+    );
+    if (files.length === 0) {
+      return { mode: "knowledge-only", content: "", fileCount: 0 };
+    }
+    const parts = [];
+    for (const file of files) {
+      const text = await this.vault.read(file);
+      parts.push(`--- FILE: ${file.name} ---
+${text}`);
+    }
+    return {
+      // Current UX does not let the learner force strict source-only grounding,
+      // so source-backed runs are treated as augmented by default.
+      mode: "augmented",
+      content: parts.join("\n\n"),
+      fileCount: files.length
+    };
+  }
+};
+
+// src/ui/topic-input-modal.ts
+var import_obsidian5 = require("obsidian");
+
+// src/stages/stage0-topic.ts
+var import_obsidian4 = require("obsidian");
+
+// node_modules/zod/v3/external.js
+var external_exports = {};
+__export(external_exports, {
+  BRAND: () => BRAND,
+  DIRTY: () => DIRTY,
+  EMPTY_PATH: () => EMPTY_PATH,
+  INVALID: () => INVALID,
+  NEVER: () => NEVER,
+  OK: () => OK,
+  ParseStatus: () => ParseStatus,
+  Schema: () => ZodType,
+  ZodAny: () => ZodAny,
+  ZodArray: () => ZodArray,
+  ZodBigInt: () => ZodBigInt,
+  ZodBoolean: () => ZodBoolean,
+  ZodBranded: () => ZodBranded,
+  ZodCatch: () => ZodCatch,
+  ZodDate: () => ZodDate,
+  ZodDefault: () => ZodDefault,
+  ZodDiscriminatedUnion: () => ZodDiscriminatedUnion,
+  ZodEffects: () => ZodEffects,
+  ZodEnum: () => ZodEnum,
+  ZodError: () => ZodError,
+  ZodFirstPartyTypeKind: () => ZodFirstPartyTypeKind,
+  ZodFunction: () => ZodFunction,
+  ZodIntersection: () => ZodIntersection,
+  ZodIssueCode: () => ZodIssueCode,
+  ZodLazy: () => ZodLazy,
+  ZodLiteral: () => ZodLiteral,
+  ZodMap: () => ZodMap,
+  ZodNaN: () => ZodNaN,
+  ZodNativeEnum: () => ZodNativeEnum,
+  ZodNever: () => ZodNever,
+  ZodNull: () => ZodNull,
+  ZodNullable: () => ZodNullable,
+  ZodNumber: () => ZodNumber,
+  ZodObject: () => ZodObject,
+  ZodOptional: () => ZodOptional,
+  ZodParsedType: () => ZodParsedType,
+  ZodPipeline: () => ZodPipeline,
+  ZodPromise: () => ZodPromise,
+  ZodReadonly: () => ZodReadonly,
+  ZodRecord: () => ZodRecord,
+  ZodSchema: () => ZodType,
+  ZodSet: () => ZodSet,
+  ZodString: () => ZodString,
+  ZodSymbol: () => ZodSymbol,
+  ZodTransformer: () => ZodEffects,
+  ZodTuple: () => ZodTuple,
+  ZodType: () => ZodType,
+  ZodUndefined: () => ZodUndefined,
+  ZodUnion: () => ZodUnion,
+  ZodUnknown: () => ZodUnknown,
+  ZodVoid: () => ZodVoid,
+  addIssueToContext: () => addIssueToContext,
+  any: () => anyType,
+  array: () => arrayType,
+  bigint: () => bigIntType,
+  boolean: () => booleanType,
+  coerce: () => coerce,
+  custom: () => custom,
+  date: () => dateType,
+  datetimeRegex: () => datetimeRegex,
+  defaultErrorMap: () => en_default,
+  discriminatedUnion: () => discriminatedUnionType,
+  effect: () => effectsType,
+  enum: () => enumType,
+  function: () => functionType,
+  getErrorMap: () => getErrorMap,
+  getParsedType: () => getParsedType,
+  instanceof: () => instanceOfType,
+  intersection: () => intersectionType,
+  isAborted: () => isAborted,
+  isAsync: () => isAsync,
+  isDirty: () => isDirty,
+  isValid: () => isValid,
+  late: () => late,
+  lazy: () => lazyType,
+  literal: () => literalType,
+  makeIssue: () => makeIssue,
+  map: () => mapType,
+  nan: () => nanType,
+  nativeEnum: () => nativeEnumType,
+  never: () => neverType,
+  null: () => nullType,
+  nullable: () => nullableType,
+  number: () => numberType,
+  object: () => objectType,
+  objectUtil: () => objectUtil,
+  oboolean: () => oboolean,
+  onumber: () => onumber,
+  optional: () => optionalType,
+  ostring: () => ostring,
+  pipeline: () => pipelineType,
+  preprocess: () => preprocessType,
+  promise: () => promiseType,
+  quotelessJson: () => quotelessJson,
+  record: () => recordType,
+  set: () => setType,
+  setErrorMap: () => setErrorMap,
+  strictObject: () => strictObjectType,
+  string: () => stringType,
+  symbol: () => symbolType,
+  transformer: () => effectsType,
+  tuple: () => tupleType,
+  undefined: () => undefinedType,
+  union: () => unionType,
+  unknown: () => unknownType,
+  util: () => util,
+  void: () => voidType
+});
+
+// node_modules/zod/v3/helpers/util.js
+var util;
+(function(util2) {
+  util2.assertEqual = (_) => {
+  };
+  function assertIs(_arg) {
+  }
+  util2.assertIs = assertIs;
+  function assertNever(_x) {
+    throw new Error();
+  }
+  util2.assertNever = assertNever;
+  util2.arrayToEnum = (items) => {
+    const obj = {};
+    for (const item of items) {
+      obj[item] = item;
+    }
+    return obj;
+  };
+  util2.getValidEnumValues = (obj) => {
+    const validKeys = util2.objectKeys(obj).filter((k) => typeof obj[obj[k]] !== "number");
+    const filtered = {};
+    for (const k of validKeys) {
+      filtered[k] = obj[k];
+    }
+    return util2.objectValues(filtered);
+  };
+  util2.objectValues = (obj) => {
+    return util2.objectKeys(obj).map(function(e) {
+      return obj[e];
+    });
+  };
+  util2.objectKeys = typeof Object.keys === "function" ? (obj) => Object.keys(obj) : (object) => {
+    const keys = [];
+    for (const key in object) {
+      if (Object.prototype.hasOwnProperty.call(object, key)) {
+        keys.push(key);
+      }
+    }
+    return keys;
+  };
+  util2.find = (arr, checker) => {
+    for (const item of arr) {
+      if (checker(item))
+        return item;
+    }
+    return void 0;
+  };
+  util2.isInteger = typeof Number.isInteger === "function" ? (val) => Number.isInteger(val) : (val) => typeof val === "number" && Number.isFinite(val) && Math.floor(val) === val;
+  function joinValues(array, separator = " | ") {
+    return array.map((val) => typeof val === "string" ? `'${val}'` : val).join(separator);
+  }
+  util2.joinValues = joinValues;
+  util2.jsonStringifyReplacer = (_, value) => {
+    if (typeof value === "bigint") {
+      return value.toString();
+    }
+    return value;
+  };
+})(util || (util = {}));
+var objectUtil;
+(function(objectUtil2) {
+  objectUtil2.mergeShapes = (first, second) => {
+    return {
+      ...first,
+      ...second
+      // second overwrites first
+    };
+  };
+})(objectUtil || (objectUtil = {}));
+var ZodParsedType = util.arrayToEnum([
+  "string",
+  "nan",
+  "number",
+  "integer",
+  "float",
+  "boolean",
+  "date",
+  "bigint",
+  "symbol",
+  "function",
+  "undefined",
+  "null",
+  "array",
+  "object",
+  "unknown",
+  "promise",
+  "void",
+  "never",
+  "map",
+  "set"
+]);
+var getParsedType = (data) => {
+  const t = typeof data;
+  switch (t) {
+    case "undefined":
+      return ZodParsedType.undefined;
+    case "string":
+      return ZodParsedType.string;
+    case "number":
+      return Number.isNaN(data) ? ZodParsedType.nan : ZodParsedType.number;
+    case "boolean":
+      return ZodParsedType.boolean;
+    case "function":
+      return ZodParsedType.function;
+    case "bigint":
+      return ZodParsedType.bigint;
+    case "symbol":
+      return ZodParsedType.symbol;
+    case "object":
+      if (Array.isArray(data)) {
+        return ZodParsedType.array;
+      }
+      if (data === null) {
+        return ZodParsedType.null;
+      }
+      if (data.then && typeof data.then === "function" && data.catch && typeof data.catch === "function") {
+        return ZodParsedType.promise;
+      }
+      if (typeof Map !== "undefined" && data instanceof Map) {
+        return ZodParsedType.map;
+      }
+      if (typeof Set !== "undefined" && data instanceof Set) {
+        return ZodParsedType.set;
+      }
+      if (typeof Date !== "undefined" && data instanceof Date) {
+        return ZodParsedType.date;
+      }
+      return ZodParsedType.object;
+    default:
+      return ZodParsedType.unknown;
+  }
+};
+
+// node_modules/zod/v3/ZodError.js
+var ZodIssueCode = util.arrayToEnum([
+  "invalid_type",
+  "invalid_literal",
+  "custom",
+  "invalid_union",
+  "invalid_union_discriminator",
+  "invalid_enum_value",
+  "unrecognized_keys",
+  "invalid_arguments",
+  "invalid_return_type",
+  "invalid_date",
+  "invalid_string",
+  "too_small",
+  "too_big",
+  "invalid_intersection_types",
+  "not_multiple_of",
+  "not_finite"
+]);
+var quotelessJson = (obj) => {
+  const json = JSON.stringify(obj, null, 2);
+  return json.replace(/"([^"]+)":/g, "$1:");
+};
+var ZodError = class _ZodError extends Error {
+  get errors() {
+    return this.issues;
+  }
+  constructor(issues) {
+    super();
+    this.issues = [];
+    this.addIssue = (sub) => {
+      this.issues = [...this.issues, sub];
+    };
+    this.addIssues = (subs = []) => {
+      this.issues = [...this.issues, ...subs];
+    };
+    const actualProto = new.target.prototype;
+    if (Object.setPrototypeOf) {
+      Object.setPrototypeOf(this, actualProto);
+    } else {
+      this.__proto__ = actualProto;
+    }
+    this.name = "ZodError";
+    this.issues = issues;
+  }
+  format(_mapper) {
+    const mapper = _mapper || function(issue) {
+      return issue.message;
+    };
+    const fieldErrors = { _errors: [] };
+    const processError = (error) => {
+      for (const issue of error.issues) {
+        if (issue.code === "invalid_union") {
+          issue.unionErrors.map(processError);
+        } else if (issue.code === "invalid_return_type") {
+          processError(issue.returnTypeError);
+        } else if (issue.code === "invalid_arguments") {
+          processError(issue.argumentsError);
+        } else if (issue.path.length === 0) {
+          fieldErrors._errors.push(mapper(issue));
+        } else {
+          let curr = fieldErrors;
+          let i = 0;
+          while (i < issue.path.length) {
+            const el = issue.path[i];
+            const terminal = i === issue.path.length - 1;
+            if (!terminal) {
+              curr[el] = curr[el] || { _errors: [] };
+            } else {
+              curr[el] = curr[el] || { _errors: [] };
+              curr[el]._errors.push(mapper(issue));
+            }
+            curr = curr[el];
+            i++;
+          }
+        }
+      }
+    };
+    processError(this);
+    return fieldErrors;
+  }
+  static assert(value) {
+    if (!(value instanceof _ZodError)) {
+      throw new Error(`Not a ZodError: ${value}`);
+    }
+  }
+  toString() {
+    return this.message;
+  }
+  get message() {
+    return JSON.stringify(this.issues, util.jsonStringifyReplacer, 2);
+  }
+  get isEmpty() {
+    return this.issues.length === 0;
+  }
+  flatten(mapper = (issue) => issue.message) {
+    const fieldErrors = {};
+    const formErrors = [];
+    for (const sub of this.issues) {
+      if (sub.path.length > 0) {
+        const firstEl = sub.path[0];
+        fieldErrors[firstEl] = fieldErrors[firstEl] || [];
+        fieldErrors[firstEl].push(mapper(sub));
+      } else {
+        formErrors.push(mapper(sub));
+      }
+    }
+    return { formErrors, fieldErrors };
+  }
+  get formErrors() {
+    return this.flatten();
+  }
+};
+ZodError.create = (issues) => {
+  const error = new ZodError(issues);
+  return error;
+};
+
+// node_modules/zod/v3/locales/en.js
+var errorMap = (issue, _ctx) => {
+  let message;
+  switch (issue.code) {
+    case ZodIssueCode.invalid_type:
+      if (issue.received === ZodParsedType.undefined) {
+        message = "Required";
+      } else {
+        message = `Expected ${issue.expected}, received ${issue.received}`;
+      }
+      break;
+    case ZodIssueCode.invalid_literal:
+      message = `Invalid literal value, expected ${JSON.stringify(issue.expected, util.jsonStringifyReplacer)}`;
+      break;
+    case ZodIssueCode.unrecognized_keys:
+      message = `Unrecognized key(s) in object: ${util.joinValues(issue.keys, ", ")}`;
+      break;
+    case ZodIssueCode.invalid_union:
+      message = `Invalid input`;
+      break;
+    case ZodIssueCode.invalid_union_discriminator:
+      message = `Invalid discriminator value. Expected ${util.joinValues(issue.options)}`;
+      break;
+    case ZodIssueCode.invalid_enum_value:
+      message = `Invalid enum value. Expected ${util.joinValues(issue.options)}, received '${issue.received}'`;
+      break;
+    case ZodIssueCode.invalid_arguments:
+      message = `Invalid function arguments`;
+      break;
+    case ZodIssueCode.invalid_return_type:
+      message = `Invalid function return type`;
+      break;
+    case ZodIssueCode.invalid_date:
+      message = `Invalid date`;
+      break;
+    case ZodIssueCode.invalid_string:
+      if (typeof issue.validation === "object") {
+        if ("includes" in issue.validation) {
+          message = `Invalid input: must include "${issue.validation.includes}"`;
+          if (typeof issue.validation.position === "number") {
+            message = `${message} at one or more positions greater than or equal to ${issue.validation.position}`;
+          }
+        } else if ("startsWith" in issue.validation) {
+          message = `Invalid input: must start with "${issue.validation.startsWith}"`;
+        } else if ("endsWith" in issue.validation) {
+          message = `Invalid input: must end with "${issue.validation.endsWith}"`;
+        } else {
+          util.assertNever(issue.validation);
+        }
+      } else if (issue.validation !== "regex") {
+        message = `Invalid ${issue.validation}`;
+      } else {
+        message = "Invalid";
+      }
+      break;
+    case ZodIssueCode.too_small:
+      if (issue.type === "array")
+        message = `Array must contain ${issue.exact ? "exactly" : issue.inclusive ? `at least` : `more than`} ${issue.minimum} element(s)`;
+      else if (issue.type === "string")
+        message = `String must contain ${issue.exact ? "exactly" : issue.inclusive ? `at least` : `over`} ${issue.minimum} character(s)`;
+      else if (issue.type === "number")
+        message = `Number must be ${issue.exact ? `exactly equal to ` : issue.inclusive ? `greater than or equal to ` : `greater than `}${issue.minimum}`;
+      else if (issue.type === "bigint")
+        message = `Number must be ${issue.exact ? `exactly equal to ` : issue.inclusive ? `greater than or equal to ` : `greater than `}${issue.minimum}`;
+      else if (issue.type === "date")
+        message = `Date must be ${issue.exact ? `exactly equal to ` : issue.inclusive ? `greater than or equal to ` : `greater than `}${new Date(Number(issue.minimum))}`;
+      else
+        message = "Invalid input";
+      break;
+    case ZodIssueCode.too_big:
+      if (issue.type === "array")
+        message = `Array must contain ${issue.exact ? `exactly` : issue.inclusive ? `at most` : `less than`} ${issue.maximum} element(s)`;
+      else if (issue.type === "string")
+        message = `String must contain ${issue.exact ? `exactly` : issue.inclusive ? `at most` : `under`} ${issue.maximum} character(s)`;
+      else if (issue.type === "number")
+        message = `Number must be ${issue.exact ? `exactly` : issue.inclusive ? `less than or equal to` : `less than`} ${issue.maximum}`;
+      else if (issue.type === "bigint")
+        message = `BigInt must be ${issue.exact ? `exactly` : issue.inclusive ? `less than or equal to` : `less than`} ${issue.maximum}`;
+      else if (issue.type === "date")
+        message = `Date must be ${issue.exact ? `exactly` : issue.inclusive ? `smaller than or equal to` : `smaller than`} ${new Date(Number(issue.maximum))}`;
+      else
+        message = "Invalid input";
+      break;
+    case ZodIssueCode.custom:
+      message = `Invalid input`;
+      break;
+    case ZodIssueCode.invalid_intersection_types:
+      message = `Intersection results could not be merged`;
+      break;
+    case ZodIssueCode.not_multiple_of:
+      message = `Number must be a multiple of ${issue.multipleOf}`;
+      break;
+    case ZodIssueCode.not_finite:
+      message = "Number must be finite";
+      break;
+    default:
+      message = _ctx.defaultError;
+      util.assertNever(issue);
+  }
+  return { message };
+};
+var en_default = errorMap;
+
+// node_modules/zod/v3/errors.js
+var overrideErrorMap = en_default;
+function setErrorMap(map) {
+  overrideErrorMap = map;
+}
+function getErrorMap() {
+  return overrideErrorMap;
+}
+
+// node_modules/zod/v3/helpers/parseUtil.js
+var makeIssue = (params) => {
+  const { data, path, errorMaps, issueData } = params;
+  const fullPath = [...path, ...issueData.path || []];
+  const fullIssue = {
+    ...issueData,
+    path: fullPath
+  };
+  if (issueData.message !== void 0) {
+    return {
+      ...issueData,
+      path: fullPath,
+      message: issueData.message
+    };
+  }
+  let errorMessage = "";
+  const maps = errorMaps.filter((m) => !!m).slice().reverse();
+  for (const map of maps) {
+    errorMessage = map(fullIssue, { data, defaultError: errorMessage }).message;
+  }
+  return {
+    ...issueData,
+    path: fullPath,
+    message: errorMessage
+  };
+};
+var EMPTY_PATH = [];
+function addIssueToContext(ctx, issueData) {
+  const overrideMap = getErrorMap();
+  const issue = makeIssue({
+    issueData,
+    data: ctx.data,
+    path: ctx.path,
+    errorMaps: [
+      ctx.common.contextualErrorMap,
+      // contextual error map is first priority
+      ctx.schemaErrorMap,
+      // then schema-bound map if available
+      overrideMap,
+      // then global override map
+      overrideMap === en_default ? void 0 : en_default
+      // then global default map
+    ].filter((x) => !!x)
+  });
+  ctx.common.issues.push(issue);
+}
+var ParseStatus = class _ParseStatus {
+  constructor() {
+    this.value = "valid";
+  }
+  dirty() {
+    if (this.value === "valid")
+      this.value = "dirty";
+  }
+  abort() {
+    if (this.value !== "aborted")
+      this.value = "aborted";
+  }
+  static mergeArray(status, results) {
+    const arrayValue = [];
+    for (const s of results) {
+      if (s.status === "aborted")
+        return INVALID;
+      if (s.status === "dirty")
+        status.dirty();
+      arrayValue.push(s.value);
+    }
+    return { status: status.value, value: arrayValue };
+  }
+  static async mergeObjectAsync(status, pairs) {
+    const syncPairs = [];
+    for (const pair of pairs) {
+      const key = await pair.key;
+      const value = await pair.value;
+      syncPairs.push({
+        key,
+        value
+      });
+    }
+    return _ParseStatus.mergeObjectSync(status, syncPairs);
+  }
+  static mergeObjectSync(status, pairs) {
+    const finalObject = {};
+    for (const pair of pairs) {
+      const { key, value } = pair;
+      if (key.status === "aborted")
+        return INVALID;
+      if (value.status === "aborted")
+        return INVALID;
+      if (key.status === "dirty")
+        status.dirty();
+      if (value.status === "dirty")
+        status.dirty();
+      if (key.value !== "__proto__" && (typeof value.value !== "undefined" || pair.alwaysSet)) {
+        finalObject[key.value] = value.value;
+      }
+    }
+    return { status: status.value, value: finalObject };
+  }
+};
+var INVALID = Object.freeze({
+  status: "aborted"
+});
+var DIRTY = (value) => ({ status: "dirty", value });
+var OK = (value) => ({ status: "valid", value });
+var isAborted = (x) => x.status === "aborted";
+var isDirty = (x) => x.status === "dirty";
+var isValid = (x) => x.status === "valid";
+var isAsync = (x) => typeof Promise !== "undefined" && x instanceof Promise;
+
+// node_modules/zod/v3/helpers/errorUtil.js
+var errorUtil;
+(function(errorUtil2) {
+  errorUtil2.errToObj = (message) => typeof message === "string" ? { message } : message || {};
+  errorUtil2.toString = (message) => typeof message === "string" ? message : message?.message;
+})(errorUtil || (errorUtil = {}));
+
+// node_modules/zod/v3/types.js
+var ParseInputLazyPath = class {
+  constructor(parent, value, path, key) {
+    this._cachedPath = [];
+    this.parent = parent;
+    this.data = value;
+    this._path = path;
+    this._key = key;
+  }
+  get path() {
+    if (!this._cachedPath.length) {
+      if (Array.isArray(this._key)) {
+        this._cachedPath.push(...this._path, ...this._key);
+      } else {
+        this._cachedPath.push(...this._path, this._key);
+      }
+    }
+    return this._cachedPath;
+  }
+};
+var handleResult = (ctx, result) => {
+  if (isValid(result)) {
+    return { success: true, data: result.value };
+  } else {
+    if (!ctx.common.issues.length) {
+      throw new Error("Validation failed but no issues detected.");
+    }
+    return {
+      success: false,
+      get error() {
+        if (this._error)
+          return this._error;
+        const error = new ZodError(ctx.common.issues);
+        this._error = error;
+        return this._error;
+      }
+    };
+  }
+};
+function processCreateParams(params) {
+  if (!params)
+    return {};
+  const { errorMap: errorMap2, invalid_type_error, required_error, description } = params;
+  if (errorMap2 && (invalid_type_error || required_error)) {
+    throw new Error(`Can't use "invalid_type_error" or "required_error" in conjunction with custom error map.`);
+  }
+  if (errorMap2)
+    return { errorMap: errorMap2, description };
+  const customMap = (iss, ctx) => {
+    const { message } = params;
+    if (iss.code === "invalid_enum_value") {
+      return { message: message ?? ctx.defaultError };
+    }
+    if (typeof ctx.data === "undefined") {
+      return { message: message ?? required_error ?? ctx.defaultError };
+    }
+    if (iss.code !== "invalid_type")
+      return { message: ctx.defaultError };
+    return { message: message ?? invalid_type_error ?? ctx.defaultError };
+  };
+  return { errorMap: customMap, description };
+}
+var ZodType = class {
+  get description() {
+    return this._def.description;
+  }
+  _getType(input) {
+    return getParsedType(input.data);
+  }
+  _getOrReturnCtx(input, ctx) {
+    return ctx || {
+      common: input.parent.common,
+      data: input.data,
+      parsedType: getParsedType(input.data),
+      schemaErrorMap: this._def.errorMap,
+      path: input.path,
+      parent: input.parent
+    };
+  }
+  _processInputParams(input) {
+    return {
+      status: new ParseStatus(),
+      ctx: {
+        common: input.parent.common,
+        data: input.data,
+        parsedType: getParsedType(input.data),
+        schemaErrorMap: this._def.errorMap,
+        path: input.path,
+        parent: input.parent
+      }
+    };
+  }
+  _parseSync(input) {
+    const result = this._parse(input);
+    if (isAsync(result)) {
+      throw new Error("Synchronous parse encountered promise.");
+    }
+    return result;
+  }
+  _parseAsync(input) {
+    const result = this._parse(input);
+    return Promise.resolve(result);
+  }
+  parse(data, params) {
+    const result = this.safeParse(data, params);
+    if (result.success)
+      return result.data;
+    throw result.error;
+  }
+  safeParse(data, params) {
+    const ctx = {
+      common: {
+        issues: [],
+        async: params?.async ?? false,
+        contextualErrorMap: params?.errorMap
+      },
+      path: params?.path || [],
+      schemaErrorMap: this._def.errorMap,
+      parent: null,
+      data,
+      parsedType: getParsedType(data)
+    };
+    const result = this._parseSync({ data, path: ctx.path, parent: ctx });
+    return handleResult(ctx, result);
+  }
+  "~validate"(data) {
+    const ctx = {
+      common: {
+        issues: [],
+        async: !!this["~standard"].async
+      },
+      path: [],
+      schemaErrorMap: this._def.errorMap,
+      parent: null,
+      data,
+      parsedType: getParsedType(data)
+    };
+    if (!this["~standard"].async) {
+      try {
+        const result = this._parseSync({ data, path: [], parent: ctx });
+        return isValid(result) ? {
+          value: result.value
+        } : {
+          issues: ctx.common.issues
+        };
+      } catch (err) {
+        if (err?.message?.toLowerCase()?.includes("encountered")) {
+          this["~standard"].async = true;
+        }
+        ctx.common = {
+          issues: [],
+          async: true
+        };
+      }
+    }
+    return this._parseAsync({ data, path: [], parent: ctx }).then((result) => isValid(result) ? {
+      value: result.value
+    } : {
+      issues: ctx.common.issues
+    });
+  }
+  async parseAsync(data, params) {
+    const result = await this.safeParseAsync(data, params);
+    if (result.success)
+      return result.data;
+    throw result.error;
+  }
+  async safeParseAsync(data, params) {
+    const ctx = {
+      common: {
+        issues: [],
+        contextualErrorMap: params?.errorMap,
+        async: true
+      },
+      path: params?.path || [],
+      schemaErrorMap: this._def.errorMap,
+      parent: null,
+      data,
+      parsedType: getParsedType(data)
+    };
+    const maybeAsyncResult = this._parse({ data, path: ctx.path, parent: ctx });
+    const result = await (isAsync(maybeAsyncResult) ? maybeAsyncResult : Promise.resolve(maybeAsyncResult));
+    return handleResult(ctx, result);
+  }
+  refine(check, message) {
+    const getIssueProperties = (val) => {
+      if (typeof message === "string" || typeof message === "undefined") {
+        return { message };
+      } else if (typeof message === "function") {
+        return message(val);
+      } else {
+        return message;
+      }
+    };
+    return this._refinement((val, ctx) => {
+      const result = check(val);
+      const setError = () => ctx.addIssue({
+        code: ZodIssueCode.custom,
+        ...getIssueProperties(val)
+      });
+      if (typeof Promise !== "undefined" && result instanceof Promise) {
+        return result.then((data) => {
+          if (!data) {
+            setError();
+            return false;
+          } else {
+            return true;
+          }
+        });
+      }
+      if (!result) {
+        setError();
+        return false;
+      } else {
+        return true;
+      }
+    });
+  }
+  refinement(check, refinementData) {
+    return this._refinement((val, ctx) => {
+      if (!check(val)) {
+        ctx.addIssue(typeof refinementData === "function" ? refinementData(val, ctx) : refinementData);
+        return false;
+      } else {
+        return true;
+      }
+    });
+  }
+  _refinement(refinement) {
+    return new ZodEffects({
+      schema: this,
+      typeName: ZodFirstPartyTypeKind.ZodEffects,
+      effect: { type: "refinement", refinement }
+    });
+  }
+  superRefine(refinement) {
+    return this._refinement(refinement);
+  }
+  constructor(def) {
+    this.spa = this.safeParseAsync;
+    this._def = def;
+    this.parse = this.parse.bind(this);
+    this.safeParse = this.safeParse.bind(this);
+    this.parseAsync = this.parseAsync.bind(this);
+    this.safeParseAsync = this.safeParseAsync.bind(this);
+    this.spa = this.spa.bind(this);
+    this.refine = this.refine.bind(this);
+    this.refinement = this.refinement.bind(this);
+    this.superRefine = this.superRefine.bind(this);
+    this.optional = this.optional.bind(this);
+    this.nullable = this.nullable.bind(this);
+    this.nullish = this.nullish.bind(this);
+    this.array = this.array.bind(this);
+    this.promise = this.promise.bind(this);
+    this.or = this.or.bind(this);
+    this.and = this.and.bind(this);
+    this.transform = this.transform.bind(this);
+    this.brand = this.brand.bind(this);
+    this.default = this.default.bind(this);
+    this.catch = this.catch.bind(this);
+    this.describe = this.describe.bind(this);
+    this.pipe = this.pipe.bind(this);
+    this.readonly = this.readonly.bind(this);
+    this.isNullable = this.isNullable.bind(this);
+    this.isOptional = this.isOptional.bind(this);
+    this["~standard"] = {
+      version: 1,
+      vendor: "zod",
+      validate: (data) => this["~validate"](data)
+    };
+  }
+  optional() {
+    return ZodOptional.create(this, this._def);
+  }
+  nullable() {
+    return ZodNullable.create(this, this._def);
+  }
+  nullish() {
+    return this.nullable().optional();
+  }
+  array() {
+    return ZodArray.create(this);
+  }
+  promise() {
+    return ZodPromise.create(this, this._def);
+  }
+  or(option) {
+    return ZodUnion.create([this, option], this._def);
+  }
+  and(incoming) {
+    return ZodIntersection.create(this, incoming, this._def);
+  }
+  transform(transform) {
+    return new ZodEffects({
+      ...processCreateParams(this._def),
+      schema: this,
+      typeName: ZodFirstPartyTypeKind.ZodEffects,
+      effect: { type: "transform", transform }
+    });
+  }
+  default(def) {
+    const defaultValueFunc = typeof def === "function" ? def : () => def;
+    return new ZodDefault({
+      ...processCreateParams(this._def),
+      innerType: this,
+      defaultValue: defaultValueFunc,
+      typeName: ZodFirstPartyTypeKind.ZodDefault
+    });
+  }
+  brand() {
+    return new ZodBranded({
+      typeName: ZodFirstPartyTypeKind.ZodBranded,
+      type: this,
+      ...processCreateParams(this._def)
+    });
+  }
+  catch(def) {
+    const catchValueFunc = typeof def === "function" ? def : () => def;
+    return new ZodCatch({
+      ...processCreateParams(this._def),
+      innerType: this,
+      catchValue: catchValueFunc,
+      typeName: ZodFirstPartyTypeKind.ZodCatch
+    });
+  }
+  describe(description) {
+    const This = this.constructor;
+    return new This({
+      ...this._def,
+      description
+    });
+  }
+  pipe(target) {
+    return ZodPipeline.create(this, target);
+  }
+  readonly() {
+    return ZodReadonly.create(this);
+  }
+  isOptional() {
+    return this.safeParse(void 0).success;
+  }
+  isNullable() {
+    return this.safeParse(null).success;
+  }
+};
+var cuidRegex = /^c[^\s-]{8,}$/i;
+var cuid2Regex = /^[0-9a-z]+$/;
+var ulidRegex = /^[0-9A-HJKMNP-TV-Z]{26}$/i;
+var uuidRegex = /^[0-9a-fA-F]{8}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{12}$/i;
+var nanoidRegex = /^[a-z0-9_-]{21}$/i;
+var jwtRegex = /^[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+\.[A-Za-z0-9-_]*$/;
+var durationRegex = /^[-+]?P(?!$)(?:(?:[-+]?\d+Y)|(?:[-+]?\d+[.,]\d+Y$))?(?:(?:[-+]?\d+M)|(?:[-+]?\d+[.,]\d+M$))?(?:(?:[-+]?\d+W)|(?:[-+]?\d+[.,]\d+W$))?(?:(?:[-+]?\d+D)|(?:[-+]?\d+[.,]\d+D$))?(?:T(?=[\d+-])(?:(?:[-+]?\d+H)|(?:[-+]?\d+[.,]\d+H$))?(?:(?:[-+]?\d+M)|(?:[-+]?\d+[.,]\d+M$))?(?:[-+]?\d+(?:[.,]\d+)?S)?)??$/;
+var emailRegex = /^(?!\.)(?!.*\.\.)([A-Z0-9_'+\-\.]*)[A-Z0-9_+-]@([A-Z0-9][A-Z0-9\-]*\.)+[A-Z]{2,}$/i;
+var _emojiRegex = `^(\\p{Extended_Pictographic}|\\p{Emoji_Component})+$`;
+var emojiRegex;
+var ipv4Regex = /^(?:(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])$/;
+var ipv4CidrRegex = /^(?:(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])\/(3[0-2]|[12]?[0-9])$/;
+var ipv6Regex = /^(([0-9a-fA-F]{1,4}:){7,7}[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,7}:|([0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,5}(:[0-9a-fA-F]{1,4}){1,2}|([0-9a-fA-F]{1,4}:){1,4}(:[0-9a-fA-F]{1,4}){1,3}|([0-9a-fA-F]{1,4}:){1,3}(:[0-9a-fA-F]{1,4}){1,4}|([0-9a-fA-F]{1,4}:){1,2}(:[0-9a-fA-F]{1,4}){1,5}|[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6})|:((:[0-9a-fA-F]{1,4}){1,7}|:)|fe80:(:[0-9a-fA-F]{0,4}){0,4}%[0-9a-zA-Z]{1,}|::(ffff(:0{1,4}){0,1}:){0,1}((25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])\.){3,3}(25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])|([0-9a-fA-F]{1,4}:){1,4}:((25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])\.){3,3}(25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9]))$/;
+var ipv6CidrRegex = /^(([0-9a-fA-F]{1,4}:){7,7}[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,7}:|([0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,5}(:[0-9a-fA-F]{1,4}){1,2}|([0-9a-fA-F]{1,4}:){1,4}(:[0-9a-fA-F]{1,4}){1,3}|([0-9a-fA-F]{1,4}:){1,3}(:[0-9a-fA-F]{1,4}){1,4}|([0-9a-fA-F]{1,4}:){1,2}(:[0-9a-fA-F]{1,4}){1,5}|[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6})|:((:[0-9a-fA-F]{1,4}){1,7}|:)|fe80:(:[0-9a-fA-F]{0,4}){0,4}%[0-9a-zA-Z]{1,}|::(ffff(:0{1,4}){0,1}:){0,1}((25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])\.){3,3}(25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])|([0-9a-fA-F]{1,4}:){1,4}:((25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])\.){3,3}(25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9]))\/(12[0-8]|1[01][0-9]|[1-9]?[0-9])$/;
+var base64Regex = /^([0-9a-zA-Z+/]{4})*(([0-9a-zA-Z+/]{2}==)|([0-9a-zA-Z+/]{3}=))?$/;
+var base64urlRegex = /^([0-9a-zA-Z-_]{4})*(([0-9a-zA-Z-_]{2}(==)?)|([0-9a-zA-Z-_]{3}(=)?))?$/;
+var dateRegexSource = `((\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-((0[13578]|1[02])-(0[1-9]|[12]\\d|3[01])|(0[469]|11)-(0[1-9]|[12]\\d|30)|(02)-(0[1-9]|1\\d|2[0-8])))`;
+var dateRegex = new RegExp(`^${dateRegexSource}$`);
+function timeRegexSource(args) {
+  let secondsRegexSource = `[0-5]\\d`;
+  if (args.precision) {
+    secondsRegexSource = `${secondsRegexSource}\\.\\d{${args.precision}}`;
+  } else if (args.precision == null) {
+    secondsRegexSource = `${secondsRegexSource}(\\.\\d+)?`;
+  }
+  const secondsQuantifier = args.precision ? "+" : "?";
+  return `([01]\\d|2[0-3]):[0-5]\\d(:${secondsRegexSource})${secondsQuantifier}`;
+}
+function timeRegex(args) {
+  return new RegExp(`^${timeRegexSource(args)}$`);
+}
+function datetimeRegex(args) {
+  let regex = `${dateRegexSource}T${timeRegexSource(args)}`;
+  const opts = [];
+  opts.push(args.local ? `Z?` : `Z`);
+  if (args.offset)
+    opts.push(`([+-]\\d{2}:?\\d{2})`);
+  regex = `${regex}(${opts.join("|")})`;
+  return new RegExp(`^${regex}$`);
+}
+function isValidIP(ip, version) {
+  if ((version === "v4" || !version) && ipv4Regex.test(ip)) {
+    return true;
+  }
+  if ((version === "v6" || !version) && ipv6Regex.test(ip)) {
+    return true;
+  }
+  return false;
+}
+function isValidJWT(jwt, alg) {
+  if (!jwtRegex.test(jwt))
+    return false;
+  try {
+    const [header] = jwt.split(".");
+    if (!header)
+      return false;
+    const base64 = header.replace(/-/g, "+").replace(/_/g, "/").padEnd(header.length + (4 - header.length % 4) % 4, "=");
+    const decoded = JSON.parse(atob(base64));
+    if (typeof decoded !== "object" || decoded === null)
+      return false;
+    if ("typ" in decoded && decoded?.typ !== "JWT")
+      return false;
+    if (!decoded.alg)
+      return false;
+    if (alg && decoded.alg !== alg)
+      return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+function isValidCidr(ip, version) {
+  if ((version === "v4" || !version) && ipv4CidrRegex.test(ip)) {
+    return true;
+  }
+  if ((version === "v6" || !version) && ipv6CidrRegex.test(ip)) {
+    return true;
+  }
+  return false;
+}
+var ZodString = class _ZodString extends ZodType {
+  _parse(input) {
+    if (this._def.coerce) {
+      input.data = String(input.data);
+    }
+    const parsedType = this._getType(input);
+    if (parsedType !== ZodParsedType.string) {
+      const ctx2 = this._getOrReturnCtx(input);
+      addIssueToContext(ctx2, {
+        code: ZodIssueCode.invalid_type,
+        expected: ZodParsedType.string,
+        received: ctx2.parsedType
+      });
+      return INVALID;
+    }
+    const status = new ParseStatus();
+    let ctx = void 0;
+    for (const check of this._def.checks) {
+      if (check.kind === "min") {
+        if (input.data.length < check.value) {
+          ctx = this._getOrReturnCtx(input, ctx);
+          addIssueToContext(ctx, {
+            code: ZodIssueCode.too_small,
+            minimum: check.value,
+            type: "string",
+            inclusive: true,
+            exact: false,
+            message: check.message
+          });
+          status.dirty();
+        }
+      } else if (check.kind === "max") {
+        if (input.data.length > check.value) {
+          ctx = this._getOrReturnCtx(input, ctx);
+          addIssueToContext(ctx, {
+            code: ZodIssueCode.too_big,
+            maximum: check.value,
+            type: "string",
+            inclusive: true,
+            exact: false,
+            message: check.message
+          });
+          status.dirty();
+        }
+      } else if (check.kind === "length") {
+        const tooBig = input.data.length > check.value;
+        const tooSmall = input.data.length < check.value;
+        if (tooBig || tooSmall) {
+          ctx = this._getOrReturnCtx(input, ctx);
+          if (tooBig) {
+            addIssueToContext(ctx, {
+              code: ZodIssueCode.too_big,
+              maximum: check.value,
+              type: "string",
+              inclusive: true,
+              exact: true,
+              message: check.message
+            });
+          } else if (tooSmall) {
+            addIssueToContext(ctx, {
+              code: ZodIssueCode.too_small,
+              minimum: check.value,
+              type: "string",
+              inclusive: true,
+              exact: true,
+              message: check.message
+            });
+          }
+          status.dirty();
+        }
+      } else if (check.kind === "email") {
+        if (!emailRegex.test(input.data)) {
+          ctx = this._getOrReturnCtx(input, ctx);
+          addIssueToContext(ctx, {
+            validation: "email",
+            code: ZodIssueCode.invalid_string,
+            message: check.message
+          });
+          status.dirty();
+        }
+      } else if (check.kind === "emoji") {
+        if (!emojiRegex) {
+          emojiRegex = new RegExp(_emojiRegex, "u");
+        }
+        if (!emojiRegex.test(input.data)) {
+          ctx = this._getOrReturnCtx(input, ctx);
+          addIssueToContext(ctx, {
+            validation: "emoji",
+            code: ZodIssueCode.invalid_string,
+            message: check.message
+          });
+          status.dirty();
+        }
+      } else if (check.kind === "uuid") {
+        if (!uuidRegex.test(input.data)) {
+          ctx = this._getOrReturnCtx(input, ctx);
+          addIssueToContext(ctx, {
+            validation: "uuid",
+            code: ZodIssueCode.invalid_string,
+            message: check.message
+          });
+          status.dirty();
+        }
+      } else if (check.kind === "nanoid") {
+        if (!nanoidRegex.test(input.data)) {
+          ctx = this._getOrReturnCtx(input, ctx);
+          addIssueToContext(ctx, {
+            validation: "nanoid",
+            code: ZodIssueCode.invalid_string,
+            message: check.message
+          });
+          status.dirty();
+        }
+      } else if (check.kind === "cuid") {
+        if (!cuidRegex.test(input.data)) {
+          ctx = this._getOrReturnCtx(input, ctx);
+          addIssueToContext(ctx, {
+            validation: "cuid",
+            code: ZodIssueCode.invalid_string,
+            message: check.message
+          });
+          status.dirty();
+        }
+      } else if (check.kind === "cuid2") {
+        if (!cuid2Regex.test(input.data)) {
+          ctx = this._getOrReturnCtx(input, ctx);
+          addIssueToContext(ctx, {
+            validation: "cuid2",
+            code: ZodIssueCode.invalid_string,
+            message: check.message
+          });
+          status.dirty();
+        }
+      } else if (check.kind === "ulid") {
+        if (!ulidRegex.test(input.data)) {
+          ctx = this._getOrReturnCtx(input, ctx);
+          addIssueToContext(ctx, {
+            validation: "ulid",
+            code: ZodIssueCode.invalid_string,
+            message: check.message
+          });
+          status.dirty();
+        }
+      } else if (check.kind === "url") {
+        try {
+          new URL(input.data);
+        } catch {
+          ctx = this._getOrReturnCtx(input, ctx);
+          addIssueToContext(ctx, {
+            validation: "url",
+            code: ZodIssueCode.invalid_string,
+            message: check.message
+          });
+          status.dirty();
+        }
+      } else if (check.kind === "regex") {
+        check.regex.lastIndex = 0;
+        const testResult = check.regex.test(input.data);
+        if (!testResult) {
+          ctx = this._getOrReturnCtx(input, ctx);
+          addIssueToContext(ctx, {
+            validation: "regex",
+            code: ZodIssueCode.invalid_string,
+            message: check.message
+          });
+          status.dirty();
+        }
+      } else if (check.kind === "trim") {
+        input.data = input.data.trim();
+      } else if (check.kind === "includes") {
+        if (!input.data.includes(check.value, check.position)) {
+          ctx = this._getOrReturnCtx(input, ctx);
+          addIssueToContext(ctx, {
+            code: ZodIssueCode.invalid_string,
+            validation: { includes: check.value, position: check.position },
+            message: check.message
+          });
+          status.dirty();
+        }
+      } else if (check.kind === "toLowerCase") {
+        input.data = input.data.toLowerCase();
+      } else if (check.kind === "toUpperCase") {
+        input.data = input.data.toUpperCase();
+      } else if (check.kind === "startsWith") {
+        if (!input.data.startsWith(check.value)) {
+          ctx = this._getOrReturnCtx(input, ctx);
+          addIssueToContext(ctx, {
+            code: ZodIssueCode.invalid_string,
+            validation: { startsWith: check.value },
+            message: check.message
+          });
+          status.dirty();
+        }
+      } else if (check.kind === "endsWith") {
+        if (!input.data.endsWith(check.value)) {
+          ctx = this._getOrReturnCtx(input, ctx);
+          addIssueToContext(ctx, {
+            code: ZodIssueCode.invalid_string,
+            validation: { endsWith: check.value },
+            message: check.message
+          });
+          status.dirty();
+        }
+      } else if (check.kind === "datetime") {
+        const regex = datetimeRegex(check);
+        if (!regex.test(input.data)) {
+          ctx = this._getOrReturnCtx(input, ctx);
+          addIssueToContext(ctx, {
+            code: ZodIssueCode.invalid_string,
+            validation: "datetime",
+            message: check.message
+          });
+          status.dirty();
+        }
+      } else if (check.kind === "date") {
+        const regex = dateRegex;
+        if (!regex.test(input.data)) {
+          ctx = this._getOrReturnCtx(input, ctx);
+          addIssueToContext(ctx, {
+            code: ZodIssueCode.invalid_string,
+            validation: "date",
+            message: check.message
+          });
+          status.dirty();
+        }
+      } else if (check.kind === "time") {
+        const regex = timeRegex(check);
+        if (!regex.test(input.data)) {
+          ctx = this._getOrReturnCtx(input, ctx);
+          addIssueToContext(ctx, {
+            code: ZodIssueCode.invalid_string,
+            validation: "time",
+            message: check.message
+          });
+          status.dirty();
+        }
+      } else if (check.kind === "duration") {
+        if (!durationRegex.test(input.data)) {
+          ctx = this._getOrReturnCtx(input, ctx);
+          addIssueToContext(ctx, {
+            validation: "duration",
+            code: ZodIssueCode.invalid_string,
+            message: check.message
+          });
+          status.dirty();
+        }
+      } else if (check.kind === "ip") {
+        if (!isValidIP(input.data, check.version)) {
+          ctx = this._getOrReturnCtx(input, ctx);
+          addIssueToContext(ctx, {
+            validation: "ip",
+            code: ZodIssueCode.invalid_string,
+            message: check.message
+          });
+          status.dirty();
+        }
+      } else if (check.kind === "jwt") {
+        if (!isValidJWT(input.data, check.alg)) {
+          ctx = this._getOrReturnCtx(input, ctx);
+          addIssueToContext(ctx, {
+            validation: "jwt",
+            code: ZodIssueCode.invalid_string,
+            message: check.message
+          });
+          status.dirty();
+        }
+      } else if (check.kind === "cidr") {
+        if (!isValidCidr(input.data, check.version)) {
+          ctx = this._getOrReturnCtx(input, ctx);
+          addIssueToContext(ctx, {
+            validation: "cidr",
+            code: ZodIssueCode.invalid_string,
+            message: check.message
+          });
+          status.dirty();
+        }
+      } else if (check.kind === "base64") {
+        if (!base64Regex.test(input.data)) {
+          ctx = this._getOrReturnCtx(input, ctx);
+          addIssueToContext(ctx, {
+            validation: "base64",
+            code: ZodIssueCode.invalid_string,
+            message: check.message
+          });
+          status.dirty();
+        }
+      } else if (check.kind === "base64url") {
+        if (!base64urlRegex.test(input.data)) {
+          ctx = this._getOrReturnCtx(input, ctx);
+          addIssueToContext(ctx, {
+            validation: "base64url",
+            code: ZodIssueCode.invalid_string,
+            message: check.message
+          });
+          status.dirty();
+        }
+      } else {
+        util.assertNever(check);
+      }
+    }
+    return { status: status.value, value: input.data };
+  }
+  _regex(regex, validation, message) {
+    return this.refinement((data) => regex.test(data), {
+      validation,
+      code: ZodIssueCode.invalid_string,
+      ...errorUtil.errToObj(message)
+    });
+  }
+  _addCheck(check) {
+    return new _ZodString({
+      ...this._def,
+      checks: [...this._def.checks, check]
+    });
+  }
+  email(message) {
+    return this._addCheck({ kind: "email", ...errorUtil.errToObj(message) });
+  }
+  url(message) {
+    return this._addCheck({ kind: "url", ...errorUtil.errToObj(message) });
+  }
+  emoji(message) {
+    return this._addCheck({ kind: "emoji", ...errorUtil.errToObj(message) });
+  }
+  uuid(message) {
+    return this._addCheck({ kind: "uuid", ...errorUtil.errToObj(message) });
+  }
+  nanoid(message) {
+    return this._addCheck({ kind: "nanoid", ...errorUtil.errToObj(message) });
+  }
+  cuid(message) {
+    return this._addCheck({ kind: "cuid", ...errorUtil.errToObj(message) });
+  }
+  cuid2(message) {
+    return this._addCheck({ kind: "cuid2", ...errorUtil.errToObj(message) });
+  }
+  ulid(message) {
+    return this._addCheck({ kind: "ulid", ...errorUtil.errToObj(message) });
+  }
+  base64(message) {
+    return this._addCheck({ kind: "base64", ...errorUtil.errToObj(message) });
+  }
+  base64url(message) {
+    return this._addCheck({
+      kind: "base64url",
+      ...errorUtil.errToObj(message)
+    });
+  }
+  jwt(options) {
+    return this._addCheck({ kind: "jwt", ...errorUtil.errToObj(options) });
+  }
+  ip(options) {
+    return this._addCheck({ kind: "ip", ...errorUtil.errToObj(options) });
+  }
+  cidr(options) {
+    return this._addCheck({ kind: "cidr", ...errorUtil.errToObj(options) });
+  }
+  datetime(options) {
+    if (typeof options === "string") {
+      return this._addCheck({
+        kind: "datetime",
+        precision: null,
+        offset: false,
+        local: false,
+        message: options
+      });
+    }
+    return this._addCheck({
+      kind: "datetime",
+      precision: typeof options?.precision === "undefined" ? null : options?.precision,
+      offset: options?.offset ?? false,
+      local: options?.local ?? false,
+      ...errorUtil.errToObj(options?.message)
+    });
+  }
+  date(message) {
+    return this._addCheck({ kind: "date", message });
+  }
+  time(options) {
+    if (typeof options === "string") {
+      return this._addCheck({
+        kind: "time",
+        precision: null,
+        message: options
+      });
+    }
+    return this._addCheck({
+      kind: "time",
+      precision: typeof options?.precision === "undefined" ? null : options?.precision,
+      ...errorUtil.errToObj(options?.message)
+    });
+  }
+  duration(message) {
+    return this._addCheck({ kind: "duration", ...errorUtil.errToObj(message) });
+  }
+  regex(regex, message) {
+    return this._addCheck({
+      kind: "regex",
+      regex,
+      ...errorUtil.errToObj(message)
+    });
+  }
+  includes(value, options) {
+    return this._addCheck({
+      kind: "includes",
+      value,
+      position: options?.position,
+      ...errorUtil.errToObj(options?.message)
+    });
+  }
+  startsWith(value, message) {
+    return this._addCheck({
+      kind: "startsWith",
+      value,
+      ...errorUtil.errToObj(message)
+    });
+  }
+  endsWith(value, message) {
+    return this._addCheck({
+      kind: "endsWith",
+      value,
+      ...errorUtil.errToObj(message)
+    });
+  }
+  min(minLength, message) {
+    return this._addCheck({
+      kind: "min",
+      value: minLength,
+      ...errorUtil.errToObj(message)
+    });
+  }
+  max(maxLength, message) {
+    return this._addCheck({
+      kind: "max",
+      value: maxLength,
+      ...errorUtil.errToObj(message)
+    });
+  }
+  length(len, message) {
+    return this._addCheck({
+      kind: "length",
+      value: len,
+      ...errorUtil.errToObj(message)
+    });
+  }
+  /**
+   * Equivalent to `.min(1)`
+   */
+  nonempty(message) {
+    return this.min(1, errorUtil.errToObj(message));
+  }
+  trim() {
+    return new _ZodString({
+      ...this._def,
+      checks: [...this._def.checks, { kind: "trim" }]
+    });
+  }
+  toLowerCase() {
+    return new _ZodString({
+      ...this._def,
+      checks: [...this._def.checks, { kind: "toLowerCase" }]
+    });
+  }
+  toUpperCase() {
+    return new _ZodString({
+      ...this._def,
+      checks: [...this._def.checks, { kind: "toUpperCase" }]
+    });
+  }
+  get isDatetime() {
+    return !!this._def.checks.find((ch) => ch.kind === "datetime");
+  }
+  get isDate() {
+    return !!this._def.checks.find((ch) => ch.kind === "date");
+  }
+  get isTime() {
+    return !!this._def.checks.find((ch) => ch.kind === "time");
+  }
+  get isDuration() {
+    return !!this._def.checks.find((ch) => ch.kind === "duration");
+  }
+  get isEmail() {
+    return !!this._def.checks.find((ch) => ch.kind === "email");
+  }
+  get isURL() {
+    return !!this._def.checks.find((ch) => ch.kind === "url");
+  }
+  get isEmoji() {
+    return !!this._def.checks.find((ch) => ch.kind === "emoji");
+  }
+  get isUUID() {
+    return !!this._def.checks.find((ch) => ch.kind === "uuid");
+  }
+  get isNANOID() {
+    return !!this._def.checks.find((ch) => ch.kind === "nanoid");
+  }
+  get isCUID() {
+    return !!this._def.checks.find((ch) => ch.kind === "cuid");
+  }
+  get isCUID2() {
+    return !!this._def.checks.find((ch) => ch.kind === "cuid2");
+  }
+  get isULID() {
+    return !!this._def.checks.find((ch) => ch.kind === "ulid");
+  }
+  get isIP() {
+    return !!this._def.checks.find((ch) => ch.kind === "ip");
+  }
+  get isCIDR() {
+    return !!this._def.checks.find((ch) => ch.kind === "cidr");
+  }
+  get isBase64() {
+    return !!this._def.checks.find((ch) => ch.kind === "base64");
+  }
+  get isBase64url() {
+    return !!this._def.checks.find((ch) => ch.kind === "base64url");
+  }
+  get minLength() {
+    let min = null;
+    for (const ch of this._def.checks) {
+      if (ch.kind === "min") {
+        if (min === null || ch.value > min)
+          min = ch.value;
+      }
+    }
+    return min;
+  }
+  get maxLength() {
+    let max = null;
+    for (const ch of this._def.checks) {
+      if (ch.kind === "max") {
+        if (max === null || ch.value < max)
+          max = ch.value;
+      }
+    }
+    return max;
+  }
+};
+ZodString.create = (params) => {
+  return new ZodString({
+    checks: [],
+    typeName: ZodFirstPartyTypeKind.ZodString,
+    coerce: params?.coerce ?? false,
+    ...processCreateParams(params)
+  });
+};
+function floatSafeRemainder(val, step) {
+  const valDecCount = (val.toString().split(".")[1] || "").length;
+  const stepDecCount = (step.toString().split(".")[1] || "").length;
+  const decCount = valDecCount > stepDecCount ? valDecCount : stepDecCount;
+  const valInt = Number.parseInt(val.toFixed(decCount).replace(".", ""));
+  const stepInt = Number.parseInt(step.toFixed(decCount).replace(".", ""));
+  return valInt % stepInt / 10 ** decCount;
+}
+var ZodNumber = class _ZodNumber extends ZodType {
+  constructor() {
+    super(...arguments);
+    this.min = this.gte;
+    this.max = this.lte;
+    this.step = this.multipleOf;
+  }
+  _parse(input) {
+    if (this._def.coerce) {
+      input.data = Number(input.data);
+    }
+    const parsedType = this._getType(input);
+    if (parsedType !== ZodParsedType.number) {
+      const ctx2 = this._getOrReturnCtx(input);
+      addIssueToContext(ctx2, {
+        code: ZodIssueCode.invalid_type,
+        expected: ZodParsedType.number,
+        received: ctx2.parsedType
+      });
+      return INVALID;
+    }
+    let ctx = void 0;
+    const status = new ParseStatus();
+    for (const check of this._def.checks) {
+      if (check.kind === "int") {
+        if (!util.isInteger(input.data)) {
+          ctx = this._getOrReturnCtx(input, ctx);
+          addIssueToContext(ctx, {
+            code: ZodIssueCode.invalid_type,
+            expected: "integer",
+            received: "float",
+            message: check.message
+          });
+          status.dirty();
+        }
+      } else if (check.kind === "min") {
+        const tooSmall = check.inclusive ? input.data < check.value : input.data <= check.value;
+        if (tooSmall) {
+          ctx = this._getOrReturnCtx(input, ctx);
+          addIssueToContext(ctx, {
+            code: ZodIssueCode.too_small,
+            minimum: check.value,
+            type: "number",
+            inclusive: check.inclusive,
+            exact: false,
+            message: check.message
+          });
+          status.dirty();
+        }
+      } else if (check.kind === "max") {
+        const tooBig = check.inclusive ? input.data > check.value : input.data >= check.value;
+        if (tooBig) {
+          ctx = this._getOrReturnCtx(input, ctx);
+          addIssueToContext(ctx, {
+            code: ZodIssueCode.too_big,
+            maximum: check.value,
+            type: "number",
+            inclusive: check.inclusive,
+            exact: false,
+            message: check.message
+          });
+          status.dirty();
+        }
+      } else if (check.kind === "multipleOf") {
+        if (floatSafeRemainder(input.data, check.value) !== 0) {
+          ctx = this._getOrReturnCtx(input, ctx);
+          addIssueToContext(ctx, {
+            code: ZodIssueCode.not_multiple_of,
+            multipleOf: check.value,
+            message: check.message
+          });
+          status.dirty();
+        }
+      } else if (check.kind === "finite") {
+        if (!Number.isFinite(input.data)) {
+          ctx = this._getOrReturnCtx(input, ctx);
+          addIssueToContext(ctx, {
+            code: ZodIssueCode.not_finite,
+            message: check.message
+          });
+          status.dirty();
+        }
+      } else {
+        util.assertNever(check);
+      }
+    }
+    return { status: status.value, value: input.data };
+  }
+  gte(value, message) {
+    return this.setLimit("min", value, true, errorUtil.toString(message));
+  }
+  gt(value, message) {
+    return this.setLimit("min", value, false, errorUtil.toString(message));
+  }
+  lte(value, message) {
+    return this.setLimit("max", value, true, errorUtil.toString(message));
+  }
+  lt(value, message) {
+    return this.setLimit("max", value, false, errorUtil.toString(message));
+  }
+  setLimit(kind, value, inclusive, message) {
+    return new _ZodNumber({
+      ...this._def,
+      checks: [
+        ...this._def.checks,
+        {
+          kind,
+          value,
+          inclusive,
+          message: errorUtil.toString(message)
+        }
+      ]
+    });
+  }
+  _addCheck(check) {
+    return new _ZodNumber({
+      ...this._def,
+      checks: [...this._def.checks, check]
+    });
+  }
+  int(message) {
+    return this._addCheck({
+      kind: "int",
+      message: errorUtil.toString(message)
+    });
+  }
+  positive(message) {
+    return this._addCheck({
+      kind: "min",
+      value: 0,
+      inclusive: false,
+      message: errorUtil.toString(message)
+    });
+  }
+  negative(message) {
+    return this._addCheck({
+      kind: "max",
+      value: 0,
+      inclusive: false,
+      message: errorUtil.toString(message)
+    });
+  }
+  nonpositive(message) {
+    return this._addCheck({
+      kind: "max",
+      value: 0,
+      inclusive: true,
+      message: errorUtil.toString(message)
+    });
+  }
+  nonnegative(message) {
+    return this._addCheck({
+      kind: "min",
+      value: 0,
+      inclusive: true,
+      message: errorUtil.toString(message)
+    });
+  }
+  multipleOf(value, message) {
+    return this._addCheck({
+      kind: "multipleOf",
+      value,
+      message: errorUtil.toString(message)
+    });
+  }
+  finite(message) {
+    return this._addCheck({
+      kind: "finite",
+      message: errorUtil.toString(message)
+    });
+  }
+  safe(message) {
+    return this._addCheck({
+      kind: "min",
+      inclusive: true,
+      value: Number.MIN_SAFE_INTEGER,
+      message: errorUtil.toString(message)
+    })._addCheck({
+      kind: "max",
+      inclusive: true,
+      value: Number.MAX_SAFE_INTEGER,
+      message: errorUtil.toString(message)
+    });
+  }
+  get minValue() {
+    let min = null;
+    for (const ch of this._def.checks) {
+      if (ch.kind === "min") {
+        if (min === null || ch.value > min)
+          min = ch.value;
+      }
+    }
+    return min;
+  }
+  get maxValue() {
+    let max = null;
+    for (const ch of this._def.checks) {
+      if (ch.kind === "max") {
+        if (max === null || ch.value < max)
+          max = ch.value;
+      }
+    }
+    return max;
+  }
+  get isInt() {
+    return !!this._def.checks.find((ch) => ch.kind === "int" || ch.kind === "multipleOf" && util.isInteger(ch.value));
+  }
+  get isFinite() {
+    let max = null;
+    let min = null;
+    for (const ch of this._def.checks) {
+      if (ch.kind === "finite" || ch.kind === "int" || ch.kind === "multipleOf") {
+        return true;
+      } else if (ch.kind === "min") {
+        if (min === null || ch.value > min)
+          min = ch.value;
+      } else if (ch.kind === "max") {
+        if (max === null || ch.value < max)
+          max = ch.value;
+      }
+    }
+    return Number.isFinite(min) && Number.isFinite(max);
+  }
+};
+ZodNumber.create = (params) => {
+  return new ZodNumber({
+    checks: [],
+    typeName: ZodFirstPartyTypeKind.ZodNumber,
+    coerce: params?.coerce || false,
+    ...processCreateParams(params)
+  });
+};
+var ZodBigInt = class _ZodBigInt extends ZodType {
+  constructor() {
+    super(...arguments);
+    this.min = this.gte;
+    this.max = this.lte;
+  }
+  _parse(input) {
+    if (this._def.coerce) {
+      try {
+        input.data = BigInt(input.data);
+      } catch {
+        return this._getInvalidInput(input);
+      }
+    }
+    const parsedType = this._getType(input);
+    if (parsedType !== ZodParsedType.bigint) {
+      return this._getInvalidInput(input);
+    }
+    let ctx = void 0;
+    const status = new ParseStatus();
+    for (const check of this._def.checks) {
+      if (check.kind === "min") {
+        const tooSmall = check.inclusive ? input.data < check.value : input.data <= check.value;
+        if (tooSmall) {
+          ctx = this._getOrReturnCtx(input, ctx);
+          addIssueToContext(ctx, {
+            code: ZodIssueCode.too_small,
+            type: "bigint",
+            minimum: check.value,
+            inclusive: check.inclusive,
+            message: check.message
+          });
+          status.dirty();
+        }
+      } else if (check.kind === "max") {
+        const tooBig = check.inclusive ? input.data > check.value : input.data >= check.value;
+        if (tooBig) {
+          ctx = this._getOrReturnCtx(input, ctx);
+          addIssueToContext(ctx, {
+            code: ZodIssueCode.too_big,
+            type: "bigint",
+            maximum: check.value,
+            inclusive: check.inclusive,
+            message: check.message
+          });
+          status.dirty();
+        }
+      } else if (check.kind === "multipleOf") {
+        if (input.data % check.value !== BigInt(0)) {
+          ctx = this._getOrReturnCtx(input, ctx);
+          addIssueToContext(ctx, {
+            code: ZodIssueCode.not_multiple_of,
+            multipleOf: check.value,
+            message: check.message
+          });
+          status.dirty();
+        }
+      } else {
+        util.assertNever(check);
+      }
+    }
+    return { status: status.value, value: input.data };
+  }
+  _getInvalidInput(input) {
+    const ctx = this._getOrReturnCtx(input);
+    addIssueToContext(ctx, {
+      code: ZodIssueCode.invalid_type,
+      expected: ZodParsedType.bigint,
+      received: ctx.parsedType
+    });
+    return INVALID;
+  }
+  gte(value, message) {
+    return this.setLimit("min", value, true, errorUtil.toString(message));
+  }
+  gt(value, message) {
+    return this.setLimit("min", value, false, errorUtil.toString(message));
+  }
+  lte(value, message) {
+    return this.setLimit("max", value, true, errorUtil.toString(message));
+  }
+  lt(value, message) {
+    return this.setLimit("max", value, false, errorUtil.toString(message));
+  }
+  setLimit(kind, value, inclusive, message) {
+    return new _ZodBigInt({
+      ...this._def,
+      checks: [
+        ...this._def.checks,
+        {
+          kind,
+          value,
+          inclusive,
+          message: errorUtil.toString(message)
+        }
+      ]
+    });
+  }
+  _addCheck(check) {
+    return new _ZodBigInt({
+      ...this._def,
+      checks: [...this._def.checks, check]
+    });
+  }
+  positive(message) {
+    return this._addCheck({
+      kind: "min",
+      value: BigInt(0),
+      inclusive: false,
+      message: errorUtil.toString(message)
+    });
+  }
+  negative(message) {
+    return this._addCheck({
+      kind: "max",
+      value: BigInt(0),
+      inclusive: false,
+      message: errorUtil.toString(message)
+    });
+  }
+  nonpositive(message) {
+    return this._addCheck({
+      kind: "max",
+      value: BigInt(0),
+      inclusive: true,
+      message: errorUtil.toString(message)
+    });
+  }
+  nonnegative(message) {
+    return this._addCheck({
+      kind: "min",
+      value: BigInt(0),
+      inclusive: true,
+      message: errorUtil.toString(message)
+    });
+  }
+  multipleOf(value, message) {
+    return this._addCheck({
+      kind: "multipleOf",
+      value,
+      message: errorUtil.toString(message)
+    });
+  }
+  get minValue() {
+    let min = null;
+    for (const ch of this._def.checks) {
+      if (ch.kind === "min") {
+        if (min === null || ch.value > min)
+          min = ch.value;
+      }
+    }
+    return min;
+  }
+  get maxValue() {
+    let max = null;
+    for (const ch of this._def.checks) {
+      if (ch.kind === "max") {
+        if (max === null || ch.value < max)
+          max = ch.value;
+      }
+    }
+    return max;
+  }
+};
+ZodBigInt.create = (params) => {
+  return new ZodBigInt({
+    checks: [],
+    typeName: ZodFirstPartyTypeKind.ZodBigInt,
+    coerce: params?.coerce ?? false,
+    ...processCreateParams(params)
+  });
+};
+var ZodBoolean = class extends ZodType {
+  _parse(input) {
+    if (this._def.coerce) {
+      input.data = Boolean(input.data);
+    }
+    const parsedType = this._getType(input);
+    if (parsedType !== ZodParsedType.boolean) {
+      const ctx = this._getOrReturnCtx(input);
+      addIssueToContext(ctx, {
+        code: ZodIssueCode.invalid_type,
+        expected: ZodParsedType.boolean,
+        received: ctx.parsedType
+      });
+      return INVALID;
+    }
+    return OK(input.data);
+  }
+};
+ZodBoolean.create = (params) => {
+  return new ZodBoolean({
+    typeName: ZodFirstPartyTypeKind.ZodBoolean,
+    coerce: params?.coerce || false,
+    ...processCreateParams(params)
+  });
+};
+var ZodDate = class _ZodDate extends ZodType {
+  _parse(input) {
+    if (this._def.coerce) {
+      input.data = new Date(input.data);
+    }
+    const parsedType = this._getType(input);
+    if (parsedType !== ZodParsedType.date) {
+      const ctx2 = this._getOrReturnCtx(input);
+      addIssueToContext(ctx2, {
+        code: ZodIssueCode.invalid_type,
+        expected: ZodParsedType.date,
+        received: ctx2.parsedType
+      });
+      return INVALID;
+    }
+    if (Number.isNaN(input.data.getTime())) {
+      const ctx2 = this._getOrReturnCtx(input);
+      addIssueToContext(ctx2, {
+        code: ZodIssueCode.invalid_date
+      });
+      return INVALID;
+    }
+    const status = new ParseStatus();
+    let ctx = void 0;
+    for (const check of this._def.checks) {
+      if (check.kind === "min") {
+        if (input.data.getTime() < check.value) {
+          ctx = this._getOrReturnCtx(input, ctx);
+          addIssueToContext(ctx, {
+            code: ZodIssueCode.too_small,
+            message: check.message,
+            inclusive: true,
+            exact: false,
+            minimum: check.value,
+            type: "date"
+          });
+          status.dirty();
+        }
+      } else if (check.kind === "max") {
+        if (input.data.getTime() > check.value) {
+          ctx = this._getOrReturnCtx(input, ctx);
+          addIssueToContext(ctx, {
+            code: ZodIssueCode.too_big,
+            message: check.message,
+            inclusive: true,
+            exact: false,
+            maximum: check.value,
+            type: "date"
+          });
+          status.dirty();
+        }
+      } else {
+        util.assertNever(check);
+      }
+    }
+    return {
+      status: status.value,
+      value: new Date(input.data.getTime())
+    };
+  }
+  _addCheck(check) {
+    return new _ZodDate({
+      ...this._def,
+      checks: [...this._def.checks, check]
+    });
+  }
+  min(minDate, message) {
+    return this._addCheck({
+      kind: "min",
+      value: minDate.getTime(),
+      message: errorUtil.toString(message)
+    });
+  }
+  max(maxDate, message) {
+    return this._addCheck({
+      kind: "max",
+      value: maxDate.getTime(),
+      message: errorUtil.toString(message)
+    });
+  }
+  get minDate() {
+    let min = null;
+    for (const ch of this._def.checks) {
+      if (ch.kind === "min") {
+        if (min === null || ch.value > min)
+          min = ch.value;
+      }
+    }
+    return min != null ? new Date(min) : null;
+  }
+  get maxDate() {
+    let max = null;
+    for (const ch of this._def.checks) {
+      if (ch.kind === "max") {
+        if (max === null || ch.value < max)
+          max = ch.value;
+      }
+    }
+    return max != null ? new Date(max) : null;
+  }
+};
+ZodDate.create = (params) => {
+  return new ZodDate({
+    checks: [],
+    coerce: params?.coerce || false,
+    typeName: ZodFirstPartyTypeKind.ZodDate,
+    ...processCreateParams(params)
+  });
+};
+var ZodSymbol = class extends ZodType {
+  _parse(input) {
+    const parsedType = this._getType(input);
+    if (parsedType !== ZodParsedType.symbol) {
+      const ctx = this._getOrReturnCtx(input);
+      addIssueToContext(ctx, {
+        code: ZodIssueCode.invalid_type,
+        expected: ZodParsedType.symbol,
+        received: ctx.parsedType
+      });
+      return INVALID;
+    }
+    return OK(input.data);
+  }
+};
+ZodSymbol.create = (params) => {
+  return new ZodSymbol({
+    typeName: ZodFirstPartyTypeKind.ZodSymbol,
+    ...processCreateParams(params)
+  });
+};
+var ZodUndefined = class extends ZodType {
+  _parse(input) {
+    const parsedType = this._getType(input);
+    if (parsedType !== ZodParsedType.undefined) {
+      const ctx = this._getOrReturnCtx(input);
+      addIssueToContext(ctx, {
+        code: ZodIssueCode.invalid_type,
+        expected: ZodParsedType.undefined,
+        received: ctx.parsedType
+      });
+      return INVALID;
+    }
+    return OK(input.data);
+  }
+};
+ZodUndefined.create = (params) => {
+  return new ZodUndefined({
+    typeName: ZodFirstPartyTypeKind.ZodUndefined,
+    ...processCreateParams(params)
+  });
+};
+var ZodNull = class extends ZodType {
+  _parse(input) {
+    const parsedType = this._getType(input);
+    if (parsedType !== ZodParsedType.null) {
+      const ctx = this._getOrReturnCtx(input);
+      addIssueToContext(ctx, {
+        code: ZodIssueCode.invalid_type,
+        expected: ZodParsedType.null,
+        received: ctx.parsedType
+      });
+      return INVALID;
+    }
+    return OK(input.data);
+  }
+};
+ZodNull.create = (params) => {
+  return new ZodNull({
+    typeName: ZodFirstPartyTypeKind.ZodNull,
+    ...processCreateParams(params)
+  });
+};
+var ZodAny = class extends ZodType {
+  constructor() {
+    super(...arguments);
+    this._any = true;
+  }
+  _parse(input) {
+    return OK(input.data);
+  }
+};
+ZodAny.create = (params) => {
+  return new ZodAny({
+    typeName: ZodFirstPartyTypeKind.ZodAny,
+    ...processCreateParams(params)
+  });
+};
+var ZodUnknown = class extends ZodType {
+  constructor() {
+    super(...arguments);
+    this._unknown = true;
+  }
+  _parse(input) {
+    return OK(input.data);
+  }
+};
+ZodUnknown.create = (params) => {
+  return new ZodUnknown({
+    typeName: ZodFirstPartyTypeKind.ZodUnknown,
+    ...processCreateParams(params)
+  });
+};
+var ZodNever = class extends ZodType {
+  _parse(input) {
+    const ctx = this._getOrReturnCtx(input);
+    addIssueToContext(ctx, {
+      code: ZodIssueCode.invalid_type,
+      expected: ZodParsedType.never,
+      received: ctx.parsedType
+    });
+    return INVALID;
+  }
+};
+ZodNever.create = (params) => {
+  return new ZodNever({
+    typeName: ZodFirstPartyTypeKind.ZodNever,
+    ...processCreateParams(params)
+  });
+};
+var ZodVoid = class extends ZodType {
+  _parse(input) {
+    const parsedType = this._getType(input);
+    if (parsedType !== ZodParsedType.undefined) {
+      const ctx = this._getOrReturnCtx(input);
+      addIssueToContext(ctx, {
+        code: ZodIssueCode.invalid_type,
+        expected: ZodParsedType.void,
+        received: ctx.parsedType
+      });
+      return INVALID;
+    }
+    return OK(input.data);
+  }
+};
+ZodVoid.create = (params) => {
+  return new ZodVoid({
+    typeName: ZodFirstPartyTypeKind.ZodVoid,
+    ...processCreateParams(params)
+  });
+};
+var ZodArray = class _ZodArray extends ZodType {
+  _parse(input) {
+    const { ctx, status } = this._processInputParams(input);
+    const def = this._def;
+    if (ctx.parsedType !== ZodParsedType.array) {
+      addIssueToContext(ctx, {
+        code: ZodIssueCode.invalid_type,
+        expected: ZodParsedType.array,
+        received: ctx.parsedType
+      });
+      return INVALID;
+    }
+    if (def.exactLength !== null) {
+      const tooBig = ctx.data.length > def.exactLength.value;
+      const tooSmall = ctx.data.length < def.exactLength.value;
+      if (tooBig || tooSmall) {
+        addIssueToContext(ctx, {
+          code: tooBig ? ZodIssueCode.too_big : ZodIssueCode.too_small,
+          minimum: tooSmall ? def.exactLength.value : void 0,
+          maximum: tooBig ? def.exactLength.value : void 0,
+          type: "array",
+          inclusive: true,
+          exact: true,
+          message: def.exactLength.message
+        });
+        status.dirty();
+      }
+    }
+    if (def.minLength !== null) {
+      if (ctx.data.length < def.minLength.value) {
+        addIssueToContext(ctx, {
+          code: ZodIssueCode.too_small,
+          minimum: def.minLength.value,
+          type: "array",
+          inclusive: true,
+          exact: false,
+          message: def.minLength.message
+        });
+        status.dirty();
+      }
+    }
+    if (def.maxLength !== null) {
+      if (ctx.data.length > def.maxLength.value) {
+        addIssueToContext(ctx, {
+          code: ZodIssueCode.too_big,
+          maximum: def.maxLength.value,
+          type: "array",
+          inclusive: true,
+          exact: false,
+          message: def.maxLength.message
+        });
+        status.dirty();
+      }
+    }
+    if (ctx.common.async) {
+      return Promise.all([...ctx.data].map((item, i) => {
+        return def.type._parseAsync(new ParseInputLazyPath(ctx, item, ctx.path, i));
+      })).then((result2) => {
+        return ParseStatus.mergeArray(status, result2);
+      });
+    }
+    const result = [...ctx.data].map((item, i) => {
+      return def.type._parseSync(new ParseInputLazyPath(ctx, item, ctx.path, i));
+    });
+    return ParseStatus.mergeArray(status, result);
+  }
+  get element() {
+    return this._def.type;
+  }
+  min(minLength, message) {
+    return new _ZodArray({
+      ...this._def,
+      minLength: { value: minLength, message: errorUtil.toString(message) }
+    });
+  }
+  max(maxLength, message) {
+    return new _ZodArray({
+      ...this._def,
+      maxLength: { value: maxLength, message: errorUtil.toString(message) }
+    });
+  }
+  length(len, message) {
+    return new _ZodArray({
+      ...this._def,
+      exactLength: { value: len, message: errorUtil.toString(message) }
+    });
+  }
+  nonempty(message) {
+    return this.min(1, message);
+  }
+};
+ZodArray.create = (schema, params) => {
+  return new ZodArray({
+    type: schema,
+    minLength: null,
+    maxLength: null,
+    exactLength: null,
+    typeName: ZodFirstPartyTypeKind.ZodArray,
+    ...processCreateParams(params)
+  });
+};
+function deepPartialify(schema) {
+  if (schema instanceof ZodObject) {
+    const newShape = {};
+    for (const key in schema.shape) {
+      const fieldSchema = schema.shape[key];
+      newShape[key] = ZodOptional.create(deepPartialify(fieldSchema));
+    }
+    return new ZodObject({
+      ...schema._def,
+      shape: () => newShape
+    });
+  } else if (schema instanceof ZodArray) {
+    return new ZodArray({
+      ...schema._def,
+      type: deepPartialify(schema.element)
+    });
+  } else if (schema instanceof ZodOptional) {
+    return ZodOptional.create(deepPartialify(schema.unwrap()));
+  } else if (schema instanceof ZodNullable) {
+    return ZodNullable.create(deepPartialify(schema.unwrap()));
+  } else if (schema instanceof ZodTuple) {
+    return ZodTuple.create(schema.items.map((item) => deepPartialify(item)));
+  } else {
+    return schema;
+  }
+}
+var ZodObject = class _ZodObject extends ZodType {
+  constructor() {
+    super(...arguments);
+    this._cached = null;
+    this.nonstrict = this.passthrough;
+    this.augment = this.extend;
+  }
+  _getCached() {
+    if (this._cached !== null)
+      return this._cached;
+    const shape = this._def.shape();
+    const keys = util.objectKeys(shape);
+    this._cached = { shape, keys };
+    return this._cached;
+  }
+  _parse(input) {
+    const parsedType = this._getType(input);
+    if (parsedType !== ZodParsedType.object) {
+      const ctx2 = this._getOrReturnCtx(input);
+      addIssueToContext(ctx2, {
+        code: ZodIssueCode.invalid_type,
+        expected: ZodParsedType.object,
+        received: ctx2.parsedType
+      });
+      return INVALID;
+    }
+    const { status, ctx } = this._processInputParams(input);
+    const { shape, keys: shapeKeys } = this._getCached();
+    const extraKeys = [];
+    if (!(this._def.catchall instanceof ZodNever && this._def.unknownKeys === "strip")) {
+      for (const key in ctx.data) {
+        if (!shapeKeys.includes(key)) {
+          extraKeys.push(key);
+        }
+      }
+    }
+    const pairs = [];
+    for (const key of shapeKeys) {
+      const keyValidator = shape[key];
+      const value = ctx.data[key];
+      pairs.push({
+        key: { status: "valid", value: key },
+        value: keyValidator._parse(new ParseInputLazyPath(ctx, value, ctx.path, key)),
+        alwaysSet: key in ctx.data
+      });
+    }
+    if (this._def.catchall instanceof ZodNever) {
+      const unknownKeys = this._def.unknownKeys;
+      if (unknownKeys === "passthrough") {
+        for (const key of extraKeys) {
+          pairs.push({
+            key: { status: "valid", value: key },
+            value: { status: "valid", value: ctx.data[key] }
+          });
+        }
+      } else if (unknownKeys === "strict") {
+        if (extraKeys.length > 0) {
+          addIssueToContext(ctx, {
+            code: ZodIssueCode.unrecognized_keys,
+            keys: extraKeys
+          });
+          status.dirty();
+        }
+      } else if (unknownKeys === "strip") {
+      } else {
+        throw new Error(`Internal ZodObject error: invalid unknownKeys value.`);
+      }
+    } else {
+      const catchall = this._def.catchall;
+      for (const key of extraKeys) {
+        const value = ctx.data[key];
+        pairs.push({
+          key: { status: "valid", value: key },
+          value: catchall._parse(
+            new ParseInputLazyPath(ctx, value, ctx.path, key)
+            //, ctx.child(key), value, getParsedType(value)
+          ),
+          alwaysSet: key in ctx.data
+        });
+      }
+    }
+    if (ctx.common.async) {
+      return Promise.resolve().then(async () => {
+        const syncPairs = [];
+        for (const pair of pairs) {
+          const key = await pair.key;
+          const value = await pair.value;
+          syncPairs.push({
+            key,
+            value,
+            alwaysSet: pair.alwaysSet
+          });
+        }
+        return syncPairs;
+      }).then((syncPairs) => {
+        return ParseStatus.mergeObjectSync(status, syncPairs);
+      });
+    } else {
+      return ParseStatus.mergeObjectSync(status, pairs);
+    }
+  }
+  get shape() {
+    return this._def.shape();
+  }
+  strict(message) {
+    errorUtil.errToObj;
+    return new _ZodObject({
+      ...this._def,
+      unknownKeys: "strict",
+      ...message !== void 0 ? {
+        errorMap: (issue, ctx) => {
+          const defaultError = this._def.errorMap?.(issue, ctx).message ?? ctx.defaultError;
+          if (issue.code === "unrecognized_keys")
+            return {
+              message: errorUtil.errToObj(message).message ?? defaultError
+            };
+          return {
+            message: defaultError
+          };
+        }
+      } : {}
+    });
+  }
+  strip() {
+    return new _ZodObject({
+      ...this._def,
+      unknownKeys: "strip"
+    });
+  }
+  passthrough() {
+    return new _ZodObject({
+      ...this._def,
+      unknownKeys: "passthrough"
+    });
+  }
+  // const AugmentFactory =
+  //   <Def extends ZodObjectDef>(def: Def) =>
+  //   <Augmentation extends ZodRawShape>(
+  //     augmentation: Augmentation
+  //   ): ZodObject<
+  //     extendShape<ReturnType<Def["shape"]>, Augmentation>,
+  //     Def["unknownKeys"],
+  //     Def["catchall"]
+  //   > => {
+  //     return new ZodObject({
+  //       ...def,
+  //       shape: () => ({
+  //         ...def.shape(),
+  //         ...augmentation,
+  //       }),
+  //     }) as any;
+  //   };
+  extend(augmentation) {
+    return new _ZodObject({
+      ...this._def,
+      shape: () => ({
+        ...this._def.shape(),
+        ...augmentation
+      })
+    });
+  }
+  /**
+   * Prior to zod@1.0.12 there was a bug in the
+   * inferred type of merged objects. Please
+   * upgrade if you are experiencing issues.
+   */
+  merge(merging) {
+    const merged = new _ZodObject({
+      unknownKeys: merging._def.unknownKeys,
+      catchall: merging._def.catchall,
+      shape: () => ({
+        ...this._def.shape(),
+        ...merging._def.shape()
+      }),
+      typeName: ZodFirstPartyTypeKind.ZodObject
+    });
+    return merged;
+  }
+  // merge<
+  //   Incoming extends AnyZodObject,
+  //   Augmentation extends Incoming["shape"],
+  //   NewOutput extends {
+  //     [k in keyof Augmentation | keyof Output]: k extends keyof Augmentation
+  //       ? Augmentation[k]["_output"]
+  //       : k extends keyof Output
+  //       ? Output[k]
+  //       : never;
+  //   },
+  //   NewInput extends {
+  //     [k in keyof Augmentation | keyof Input]: k extends keyof Augmentation
+  //       ? Augmentation[k]["_input"]
+  //       : k extends keyof Input
+  //       ? Input[k]
+  //       : never;
+  //   }
+  // >(
+  //   merging: Incoming
+  // ): ZodObject<
+  //   extendShape<T, ReturnType<Incoming["_def"]["shape"]>>,
+  //   Incoming["_def"]["unknownKeys"],
+  //   Incoming["_def"]["catchall"],
+  //   NewOutput,
+  //   NewInput
+  // > {
+  //   const merged: any = new ZodObject({
+  //     unknownKeys: merging._def.unknownKeys,
+  //     catchall: merging._def.catchall,
+  //     shape: () =>
+  //       objectUtil.mergeShapes(this._def.shape(), merging._def.shape()),
+  //     typeName: ZodFirstPartyTypeKind.ZodObject,
+  //   }) as any;
+  //   return merged;
+  // }
+  setKey(key, schema) {
+    return this.augment({ [key]: schema });
+  }
+  // merge<Incoming extends AnyZodObject>(
+  //   merging: Incoming
+  // ): //ZodObject<T & Incoming["_shape"], UnknownKeys, Catchall> = (merging) => {
+  // ZodObject<
+  //   extendShape<T, ReturnType<Incoming["_def"]["shape"]>>,
+  //   Incoming["_def"]["unknownKeys"],
+  //   Incoming["_def"]["catchall"]
+  // > {
+  //   // const mergedShape = objectUtil.mergeShapes(
+  //   //   this._def.shape(),
+  //   //   merging._def.shape()
+  //   // );
+  //   const merged: any = new ZodObject({
+  //     unknownKeys: merging._def.unknownKeys,
+  //     catchall: merging._def.catchall,
+  //     shape: () =>
+  //       objectUtil.mergeShapes(this._def.shape(), merging._def.shape()),
+  //     typeName: ZodFirstPartyTypeKind.ZodObject,
+  //   }) as any;
+  //   return merged;
+  // }
+  catchall(index) {
+    return new _ZodObject({
+      ...this._def,
+      catchall: index
+    });
+  }
+  pick(mask) {
+    const shape = {};
+    for (const key of util.objectKeys(mask)) {
+      if (mask[key] && this.shape[key]) {
+        shape[key] = this.shape[key];
+      }
+    }
+    return new _ZodObject({
+      ...this._def,
+      shape: () => shape
+    });
+  }
+  omit(mask) {
+    const shape = {};
+    for (const key of util.objectKeys(this.shape)) {
+      if (!mask[key]) {
+        shape[key] = this.shape[key];
+      }
+    }
+    return new _ZodObject({
+      ...this._def,
+      shape: () => shape
+    });
+  }
+  /**
+   * @deprecated
+   */
+  deepPartial() {
+    return deepPartialify(this);
+  }
+  partial(mask) {
+    const newShape = {};
+    for (const key of util.objectKeys(this.shape)) {
+      const fieldSchema = this.shape[key];
+      if (mask && !mask[key]) {
+        newShape[key] = fieldSchema;
+      } else {
+        newShape[key] = fieldSchema.optional();
+      }
+    }
+    return new _ZodObject({
+      ...this._def,
+      shape: () => newShape
+    });
+  }
+  required(mask) {
+    const newShape = {};
+    for (const key of util.objectKeys(this.shape)) {
+      if (mask && !mask[key]) {
+        newShape[key] = this.shape[key];
+      } else {
+        const fieldSchema = this.shape[key];
+        let newField = fieldSchema;
+        while (newField instanceof ZodOptional) {
+          newField = newField._def.innerType;
+        }
+        newShape[key] = newField;
+      }
+    }
+    return new _ZodObject({
+      ...this._def,
+      shape: () => newShape
+    });
+  }
+  keyof() {
+    return createZodEnum(util.objectKeys(this.shape));
+  }
+};
+ZodObject.create = (shape, params) => {
+  return new ZodObject({
+    shape: () => shape,
+    unknownKeys: "strip",
+    catchall: ZodNever.create(),
+    typeName: ZodFirstPartyTypeKind.ZodObject,
+    ...processCreateParams(params)
+  });
+};
+ZodObject.strictCreate = (shape, params) => {
+  return new ZodObject({
+    shape: () => shape,
+    unknownKeys: "strict",
+    catchall: ZodNever.create(),
+    typeName: ZodFirstPartyTypeKind.ZodObject,
+    ...processCreateParams(params)
+  });
+};
+ZodObject.lazycreate = (shape, params) => {
+  return new ZodObject({
+    shape,
+    unknownKeys: "strip",
+    catchall: ZodNever.create(),
+    typeName: ZodFirstPartyTypeKind.ZodObject,
+    ...processCreateParams(params)
+  });
+};
+var ZodUnion = class extends ZodType {
+  _parse(input) {
+    const { ctx } = this._processInputParams(input);
+    const options = this._def.options;
+    function handleResults(results) {
+      for (const result of results) {
+        if (result.result.status === "valid") {
+          return result.result;
+        }
+      }
+      for (const result of results) {
+        if (result.result.status === "dirty") {
+          ctx.common.issues.push(...result.ctx.common.issues);
+          return result.result;
+        }
+      }
+      const unionErrors = results.map((result) => new ZodError(result.ctx.common.issues));
+      addIssueToContext(ctx, {
+        code: ZodIssueCode.invalid_union,
+        unionErrors
+      });
+      return INVALID;
+    }
+    if (ctx.common.async) {
+      return Promise.all(options.map(async (option) => {
+        const childCtx = {
+          ...ctx,
+          common: {
+            ...ctx.common,
+            issues: []
+          },
+          parent: null
+        };
+        return {
+          result: await option._parseAsync({
+            data: ctx.data,
+            path: ctx.path,
+            parent: childCtx
+          }),
+          ctx: childCtx
+        };
+      })).then(handleResults);
+    } else {
+      let dirty = void 0;
+      const issues = [];
+      for (const option of options) {
+        const childCtx = {
+          ...ctx,
+          common: {
+            ...ctx.common,
+            issues: []
+          },
+          parent: null
+        };
+        const result = option._parseSync({
+          data: ctx.data,
+          path: ctx.path,
+          parent: childCtx
+        });
+        if (result.status === "valid") {
+          return result;
+        } else if (result.status === "dirty" && !dirty) {
+          dirty = { result, ctx: childCtx };
+        }
+        if (childCtx.common.issues.length) {
+          issues.push(childCtx.common.issues);
+        }
+      }
+      if (dirty) {
+        ctx.common.issues.push(...dirty.ctx.common.issues);
+        return dirty.result;
+      }
+      const unionErrors = issues.map((issues2) => new ZodError(issues2));
+      addIssueToContext(ctx, {
+        code: ZodIssueCode.invalid_union,
+        unionErrors
+      });
+      return INVALID;
+    }
+  }
+  get options() {
+    return this._def.options;
+  }
+};
+ZodUnion.create = (types, params) => {
+  return new ZodUnion({
+    options: types,
+    typeName: ZodFirstPartyTypeKind.ZodUnion,
+    ...processCreateParams(params)
+  });
+};
+var getDiscriminator = (type) => {
+  if (type instanceof ZodLazy) {
+    return getDiscriminator(type.schema);
+  } else if (type instanceof ZodEffects) {
+    return getDiscriminator(type.innerType());
+  } else if (type instanceof ZodLiteral) {
+    return [type.value];
+  } else if (type instanceof ZodEnum) {
+    return type.options;
+  } else if (type instanceof ZodNativeEnum) {
+    return util.objectValues(type.enum);
+  } else if (type instanceof ZodDefault) {
+    return getDiscriminator(type._def.innerType);
+  } else if (type instanceof ZodUndefined) {
+    return [void 0];
+  } else if (type instanceof ZodNull) {
+    return [null];
+  } else if (type instanceof ZodOptional) {
+    return [void 0, ...getDiscriminator(type.unwrap())];
+  } else if (type instanceof ZodNullable) {
+    return [null, ...getDiscriminator(type.unwrap())];
+  } else if (type instanceof ZodBranded) {
+    return getDiscriminator(type.unwrap());
+  } else if (type instanceof ZodReadonly) {
+    return getDiscriminator(type.unwrap());
+  } else if (type instanceof ZodCatch) {
+    return getDiscriminator(type._def.innerType);
+  } else {
+    return [];
+  }
+};
+var ZodDiscriminatedUnion = class _ZodDiscriminatedUnion extends ZodType {
+  _parse(input) {
+    const { ctx } = this._processInputParams(input);
+    if (ctx.parsedType !== ZodParsedType.object) {
+      addIssueToContext(ctx, {
+        code: ZodIssueCode.invalid_type,
+        expected: ZodParsedType.object,
+        received: ctx.parsedType
+      });
+      return INVALID;
+    }
+    const discriminator = this.discriminator;
+    const discriminatorValue = ctx.data[discriminator];
+    const option = this.optionsMap.get(discriminatorValue);
+    if (!option) {
+      addIssueToContext(ctx, {
+        code: ZodIssueCode.invalid_union_discriminator,
+        options: Array.from(this.optionsMap.keys()),
+        path: [discriminator]
+      });
+      return INVALID;
+    }
+    if (ctx.common.async) {
+      return option._parseAsync({
+        data: ctx.data,
+        path: ctx.path,
+        parent: ctx
+      });
+    } else {
+      return option._parseSync({
+        data: ctx.data,
+        path: ctx.path,
+        parent: ctx
+      });
+    }
+  }
+  get discriminator() {
+    return this._def.discriminator;
+  }
+  get options() {
+    return this._def.options;
+  }
+  get optionsMap() {
+    return this._def.optionsMap;
+  }
+  /**
+   * The constructor of the discriminated union schema. Its behaviour is very similar to that of the normal z.union() constructor.
+   * However, it only allows a union of objects, all of which need to share a discriminator property. This property must
+   * have a different value for each object in the union.
+   * @param discriminator the name of the discriminator property
+   * @param types an array of object schemas
+   * @param params
+   */
+  static create(discriminator, options, params) {
+    const optionsMap = /* @__PURE__ */ new Map();
+    for (const type of options) {
+      const discriminatorValues = getDiscriminator(type.shape[discriminator]);
+      if (!discriminatorValues.length) {
+        throw new Error(`A discriminator value for key \`${discriminator}\` could not be extracted from all schema options`);
+      }
+      for (const value of discriminatorValues) {
+        if (optionsMap.has(value)) {
+          throw new Error(`Discriminator property ${String(discriminator)} has duplicate value ${String(value)}`);
+        }
+        optionsMap.set(value, type);
+      }
+    }
+    return new _ZodDiscriminatedUnion({
+      typeName: ZodFirstPartyTypeKind.ZodDiscriminatedUnion,
+      discriminator,
+      options,
+      optionsMap,
+      ...processCreateParams(params)
+    });
+  }
+};
+function mergeValues(a, b) {
+  const aType = getParsedType(a);
+  const bType = getParsedType(b);
+  if (a === b) {
+    return { valid: true, data: a };
+  } else if (aType === ZodParsedType.object && bType === ZodParsedType.object) {
+    const bKeys = util.objectKeys(b);
+    const sharedKeys = util.objectKeys(a).filter((key) => bKeys.indexOf(key) !== -1);
+    const newObj = { ...a, ...b };
+    for (const key of sharedKeys) {
+      const sharedValue = mergeValues(a[key], b[key]);
+      if (!sharedValue.valid) {
+        return { valid: false };
+      }
+      newObj[key] = sharedValue.data;
+    }
+    return { valid: true, data: newObj };
+  } else if (aType === ZodParsedType.array && bType === ZodParsedType.array) {
+    if (a.length !== b.length) {
+      return { valid: false };
+    }
+    const newArray = [];
+    for (let index = 0; index < a.length; index++) {
+      const itemA = a[index];
+      const itemB = b[index];
+      const sharedValue = mergeValues(itemA, itemB);
+      if (!sharedValue.valid) {
+        return { valid: false };
+      }
+      newArray.push(sharedValue.data);
+    }
+    return { valid: true, data: newArray };
+  } else if (aType === ZodParsedType.date && bType === ZodParsedType.date && +a === +b) {
+    return { valid: true, data: a };
+  } else {
+    return { valid: false };
+  }
+}
+var ZodIntersection = class extends ZodType {
+  _parse(input) {
+    const { status, ctx } = this._processInputParams(input);
+    const handleParsed = (parsedLeft, parsedRight) => {
+      if (isAborted(parsedLeft) || isAborted(parsedRight)) {
+        return INVALID;
+      }
+      const merged = mergeValues(parsedLeft.value, parsedRight.value);
+      if (!merged.valid) {
+        addIssueToContext(ctx, {
+          code: ZodIssueCode.invalid_intersection_types
+        });
+        return INVALID;
+      }
+      if (isDirty(parsedLeft) || isDirty(parsedRight)) {
+        status.dirty();
+      }
+      return { status: status.value, value: merged.data };
+    };
+    if (ctx.common.async) {
+      return Promise.all([
+        this._def.left._parseAsync({
+          data: ctx.data,
+          path: ctx.path,
+          parent: ctx
+        }),
+        this._def.right._parseAsync({
+          data: ctx.data,
+          path: ctx.path,
+          parent: ctx
+        })
+      ]).then(([left, right]) => handleParsed(left, right));
+    } else {
+      return handleParsed(this._def.left._parseSync({
+        data: ctx.data,
+        path: ctx.path,
+        parent: ctx
+      }), this._def.right._parseSync({
+        data: ctx.data,
+        path: ctx.path,
+        parent: ctx
+      }));
+    }
+  }
+};
+ZodIntersection.create = (left, right, params) => {
+  return new ZodIntersection({
+    left,
+    right,
+    typeName: ZodFirstPartyTypeKind.ZodIntersection,
+    ...processCreateParams(params)
+  });
+};
+var ZodTuple = class _ZodTuple extends ZodType {
+  _parse(input) {
+    const { status, ctx } = this._processInputParams(input);
+    if (ctx.parsedType !== ZodParsedType.array) {
+      addIssueToContext(ctx, {
+        code: ZodIssueCode.invalid_type,
+        expected: ZodParsedType.array,
+        received: ctx.parsedType
+      });
+      return INVALID;
+    }
+    if (ctx.data.length < this._def.items.length) {
+      addIssueToContext(ctx, {
+        code: ZodIssueCode.too_small,
+        minimum: this._def.items.length,
+        inclusive: true,
+        exact: false,
+        type: "array"
+      });
+      return INVALID;
+    }
+    const rest = this._def.rest;
+    if (!rest && ctx.data.length > this._def.items.length) {
+      addIssueToContext(ctx, {
+        code: ZodIssueCode.too_big,
+        maximum: this._def.items.length,
+        inclusive: true,
+        exact: false,
+        type: "array"
+      });
+      status.dirty();
+    }
+    const items = [...ctx.data].map((item, itemIndex) => {
+      const schema = this._def.items[itemIndex] || this._def.rest;
+      if (!schema)
+        return null;
+      return schema._parse(new ParseInputLazyPath(ctx, item, ctx.path, itemIndex));
+    }).filter((x) => !!x);
+    if (ctx.common.async) {
+      return Promise.all(items).then((results) => {
+        return ParseStatus.mergeArray(status, results);
+      });
+    } else {
+      return ParseStatus.mergeArray(status, items);
+    }
+  }
+  get items() {
+    return this._def.items;
+  }
+  rest(rest) {
+    return new _ZodTuple({
+      ...this._def,
+      rest
+    });
+  }
+};
+ZodTuple.create = (schemas, params) => {
+  if (!Array.isArray(schemas)) {
+    throw new Error("You must pass an array of schemas to z.tuple([ ... ])");
+  }
+  return new ZodTuple({
+    items: schemas,
+    typeName: ZodFirstPartyTypeKind.ZodTuple,
+    rest: null,
+    ...processCreateParams(params)
+  });
+};
+var ZodRecord = class _ZodRecord extends ZodType {
+  get keySchema() {
+    return this._def.keyType;
+  }
+  get valueSchema() {
+    return this._def.valueType;
+  }
+  _parse(input) {
+    const { status, ctx } = this._processInputParams(input);
+    if (ctx.parsedType !== ZodParsedType.object) {
+      addIssueToContext(ctx, {
+        code: ZodIssueCode.invalid_type,
+        expected: ZodParsedType.object,
+        received: ctx.parsedType
+      });
+      return INVALID;
+    }
+    const pairs = [];
+    const keyType = this._def.keyType;
+    const valueType = this._def.valueType;
+    for (const key in ctx.data) {
+      pairs.push({
+        key: keyType._parse(new ParseInputLazyPath(ctx, key, ctx.path, key)),
+        value: valueType._parse(new ParseInputLazyPath(ctx, ctx.data[key], ctx.path, key)),
+        alwaysSet: key in ctx.data
+      });
+    }
+    if (ctx.common.async) {
+      return ParseStatus.mergeObjectAsync(status, pairs);
+    } else {
+      return ParseStatus.mergeObjectSync(status, pairs);
+    }
+  }
+  get element() {
+    return this._def.valueType;
+  }
+  static create(first, second, third) {
+    if (second instanceof ZodType) {
+      return new _ZodRecord({
+        keyType: first,
+        valueType: second,
+        typeName: ZodFirstPartyTypeKind.ZodRecord,
+        ...processCreateParams(third)
+      });
+    }
+    return new _ZodRecord({
+      keyType: ZodString.create(),
+      valueType: first,
+      typeName: ZodFirstPartyTypeKind.ZodRecord,
+      ...processCreateParams(second)
+    });
+  }
+};
+var ZodMap = class extends ZodType {
+  get keySchema() {
+    return this._def.keyType;
+  }
+  get valueSchema() {
+    return this._def.valueType;
+  }
+  _parse(input) {
+    const { status, ctx } = this._processInputParams(input);
+    if (ctx.parsedType !== ZodParsedType.map) {
+      addIssueToContext(ctx, {
+        code: ZodIssueCode.invalid_type,
+        expected: ZodParsedType.map,
+        received: ctx.parsedType
+      });
+      return INVALID;
+    }
+    const keyType = this._def.keyType;
+    const valueType = this._def.valueType;
+    const pairs = [...ctx.data.entries()].map(([key, value], index) => {
+      return {
+        key: keyType._parse(new ParseInputLazyPath(ctx, key, ctx.path, [index, "key"])),
+        value: valueType._parse(new ParseInputLazyPath(ctx, value, ctx.path, [index, "value"]))
+      };
+    });
+    if (ctx.common.async) {
+      const finalMap = /* @__PURE__ */ new Map();
+      return Promise.resolve().then(async () => {
+        for (const pair of pairs) {
+          const key = await pair.key;
+          const value = await pair.value;
+          if (key.status === "aborted" || value.status === "aborted") {
+            return INVALID;
+          }
+          if (key.status === "dirty" || value.status === "dirty") {
+            status.dirty();
+          }
+          finalMap.set(key.value, value.value);
+        }
+        return { status: status.value, value: finalMap };
+      });
+    } else {
+      const finalMap = /* @__PURE__ */ new Map();
+      for (const pair of pairs) {
+        const key = pair.key;
+        const value = pair.value;
+        if (key.status === "aborted" || value.status === "aborted") {
+          return INVALID;
+        }
+        if (key.status === "dirty" || value.status === "dirty") {
+          status.dirty();
+        }
+        finalMap.set(key.value, value.value);
+      }
+      return { status: status.value, value: finalMap };
+    }
+  }
+};
+ZodMap.create = (keyType, valueType, params) => {
+  return new ZodMap({
+    valueType,
+    keyType,
+    typeName: ZodFirstPartyTypeKind.ZodMap,
+    ...processCreateParams(params)
+  });
+};
+var ZodSet = class _ZodSet extends ZodType {
+  _parse(input) {
+    const { status, ctx } = this._processInputParams(input);
+    if (ctx.parsedType !== ZodParsedType.set) {
+      addIssueToContext(ctx, {
+        code: ZodIssueCode.invalid_type,
+        expected: ZodParsedType.set,
+        received: ctx.parsedType
+      });
+      return INVALID;
+    }
+    const def = this._def;
+    if (def.minSize !== null) {
+      if (ctx.data.size < def.minSize.value) {
+        addIssueToContext(ctx, {
+          code: ZodIssueCode.too_small,
+          minimum: def.minSize.value,
+          type: "set",
+          inclusive: true,
+          exact: false,
+          message: def.minSize.message
+        });
+        status.dirty();
+      }
+    }
+    if (def.maxSize !== null) {
+      if (ctx.data.size > def.maxSize.value) {
+        addIssueToContext(ctx, {
+          code: ZodIssueCode.too_big,
+          maximum: def.maxSize.value,
+          type: "set",
+          inclusive: true,
+          exact: false,
+          message: def.maxSize.message
+        });
+        status.dirty();
+      }
+    }
+    const valueType = this._def.valueType;
+    function finalizeSet(elements2) {
+      const parsedSet = /* @__PURE__ */ new Set();
+      for (const element of elements2) {
+        if (element.status === "aborted")
+          return INVALID;
+        if (element.status === "dirty")
+          status.dirty();
+        parsedSet.add(element.value);
+      }
+      return { status: status.value, value: parsedSet };
+    }
+    const elements = [...ctx.data.values()].map((item, i) => valueType._parse(new ParseInputLazyPath(ctx, item, ctx.path, i)));
+    if (ctx.common.async) {
+      return Promise.all(elements).then((elements2) => finalizeSet(elements2));
+    } else {
+      return finalizeSet(elements);
+    }
+  }
+  min(minSize, message) {
+    return new _ZodSet({
+      ...this._def,
+      minSize: { value: minSize, message: errorUtil.toString(message) }
+    });
+  }
+  max(maxSize, message) {
+    return new _ZodSet({
+      ...this._def,
+      maxSize: { value: maxSize, message: errorUtil.toString(message) }
+    });
+  }
+  size(size, message) {
+    return this.min(size, message).max(size, message);
+  }
+  nonempty(message) {
+    return this.min(1, message);
+  }
+};
+ZodSet.create = (valueType, params) => {
+  return new ZodSet({
+    valueType,
+    minSize: null,
+    maxSize: null,
+    typeName: ZodFirstPartyTypeKind.ZodSet,
+    ...processCreateParams(params)
+  });
+};
+var ZodFunction = class _ZodFunction extends ZodType {
+  constructor() {
+    super(...arguments);
+    this.validate = this.implement;
+  }
+  _parse(input) {
+    const { ctx } = this._processInputParams(input);
+    if (ctx.parsedType !== ZodParsedType.function) {
+      addIssueToContext(ctx, {
+        code: ZodIssueCode.invalid_type,
+        expected: ZodParsedType.function,
+        received: ctx.parsedType
+      });
+      return INVALID;
+    }
+    function makeArgsIssue(args, error) {
+      return makeIssue({
+        data: args,
+        path: ctx.path,
+        errorMaps: [ctx.common.contextualErrorMap, ctx.schemaErrorMap, getErrorMap(), en_default].filter((x) => !!x),
+        issueData: {
+          code: ZodIssueCode.invalid_arguments,
+          argumentsError: error
+        }
+      });
+    }
+    function makeReturnsIssue(returns, error) {
+      return makeIssue({
+        data: returns,
+        path: ctx.path,
+        errorMaps: [ctx.common.contextualErrorMap, ctx.schemaErrorMap, getErrorMap(), en_default].filter((x) => !!x),
+        issueData: {
+          code: ZodIssueCode.invalid_return_type,
+          returnTypeError: error
+        }
+      });
+    }
+    const params = { errorMap: ctx.common.contextualErrorMap };
+    const fn = ctx.data;
+    if (this._def.returns instanceof ZodPromise) {
+      const me = this;
+      return OK(async function(...args) {
+        const error = new ZodError([]);
+        const parsedArgs = await me._def.args.parseAsync(args, params).catch((e) => {
+          error.addIssue(makeArgsIssue(args, e));
+          throw error;
+        });
+        const result = await Reflect.apply(fn, this, parsedArgs);
+        const parsedReturns = await me._def.returns._def.type.parseAsync(result, params).catch((e) => {
+          error.addIssue(makeReturnsIssue(result, e));
+          throw error;
+        });
+        return parsedReturns;
+      });
+    } else {
+      const me = this;
+      return OK(function(...args) {
+        const parsedArgs = me._def.args.safeParse(args, params);
+        if (!parsedArgs.success) {
+          throw new ZodError([makeArgsIssue(args, parsedArgs.error)]);
+        }
+        const result = Reflect.apply(fn, this, parsedArgs.data);
+        const parsedReturns = me._def.returns.safeParse(result, params);
+        if (!parsedReturns.success) {
+          throw new ZodError([makeReturnsIssue(result, parsedReturns.error)]);
+        }
+        return parsedReturns.data;
+      });
+    }
+  }
+  parameters() {
+    return this._def.args;
+  }
+  returnType() {
+    return this._def.returns;
+  }
+  args(...items) {
+    return new _ZodFunction({
+      ...this._def,
+      args: ZodTuple.create(items).rest(ZodUnknown.create())
+    });
+  }
+  returns(returnType) {
+    return new _ZodFunction({
+      ...this._def,
+      returns: returnType
+    });
+  }
+  implement(func) {
+    const validatedFunc = this.parse(func);
+    return validatedFunc;
+  }
+  strictImplement(func) {
+    const validatedFunc = this.parse(func);
+    return validatedFunc;
+  }
+  static create(args, returns, params) {
+    return new _ZodFunction({
+      args: args ? args : ZodTuple.create([]).rest(ZodUnknown.create()),
+      returns: returns || ZodUnknown.create(),
+      typeName: ZodFirstPartyTypeKind.ZodFunction,
+      ...processCreateParams(params)
+    });
+  }
+};
+var ZodLazy = class extends ZodType {
+  get schema() {
+    return this._def.getter();
+  }
+  _parse(input) {
+    const { ctx } = this._processInputParams(input);
+    const lazySchema = this._def.getter();
+    return lazySchema._parse({ data: ctx.data, path: ctx.path, parent: ctx });
+  }
+};
+ZodLazy.create = (getter, params) => {
+  return new ZodLazy({
+    getter,
+    typeName: ZodFirstPartyTypeKind.ZodLazy,
+    ...processCreateParams(params)
+  });
+};
+var ZodLiteral = class extends ZodType {
+  _parse(input) {
+    if (input.data !== this._def.value) {
+      const ctx = this._getOrReturnCtx(input);
+      addIssueToContext(ctx, {
+        received: ctx.data,
+        code: ZodIssueCode.invalid_literal,
+        expected: this._def.value
+      });
+      return INVALID;
+    }
+    return { status: "valid", value: input.data };
+  }
+  get value() {
+    return this._def.value;
+  }
+};
+ZodLiteral.create = (value, params) => {
+  return new ZodLiteral({
+    value,
+    typeName: ZodFirstPartyTypeKind.ZodLiteral,
+    ...processCreateParams(params)
+  });
+};
+function createZodEnum(values, params) {
+  return new ZodEnum({
+    values,
+    typeName: ZodFirstPartyTypeKind.ZodEnum,
+    ...processCreateParams(params)
+  });
+}
+var ZodEnum = class _ZodEnum extends ZodType {
+  _parse(input) {
+    if (typeof input.data !== "string") {
+      const ctx = this._getOrReturnCtx(input);
+      const expectedValues = this._def.values;
+      addIssueToContext(ctx, {
+        expected: util.joinValues(expectedValues),
+        received: ctx.parsedType,
+        code: ZodIssueCode.invalid_type
+      });
+      return INVALID;
+    }
+    if (!this._cache) {
+      this._cache = new Set(this._def.values);
+    }
+    if (!this._cache.has(input.data)) {
+      const ctx = this._getOrReturnCtx(input);
+      const expectedValues = this._def.values;
+      addIssueToContext(ctx, {
+        received: ctx.data,
+        code: ZodIssueCode.invalid_enum_value,
+        options: expectedValues
+      });
+      return INVALID;
+    }
+    return OK(input.data);
+  }
+  get options() {
+    return this._def.values;
+  }
+  get enum() {
+    const enumValues = {};
+    for (const val of this._def.values) {
+      enumValues[val] = val;
+    }
+    return enumValues;
+  }
+  get Values() {
+    const enumValues = {};
+    for (const val of this._def.values) {
+      enumValues[val] = val;
+    }
+    return enumValues;
+  }
+  get Enum() {
+    const enumValues = {};
+    for (const val of this._def.values) {
+      enumValues[val] = val;
+    }
+    return enumValues;
+  }
+  extract(values, newDef = this._def) {
+    return _ZodEnum.create(values, {
+      ...this._def,
+      ...newDef
+    });
+  }
+  exclude(values, newDef = this._def) {
+    return _ZodEnum.create(this.options.filter((opt) => !values.includes(opt)), {
+      ...this._def,
+      ...newDef
+    });
+  }
+};
+ZodEnum.create = createZodEnum;
+var ZodNativeEnum = class extends ZodType {
+  _parse(input) {
+    const nativeEnumValues = util.getValidEnumValues(this._def.values);
+    const ctx = this._getOrReturnCtx(input);
+    if (ctx.parsedType !== ZodParsedType.string && ctx.parsedType !== ZodParsedType.number) {
+      const expectedValues = util.objectValues(nativeEnumValues);
+      addIssueToContext(ctx, {
+        expected: util.joinValues(expectedValues),
+        received: ctx.parsedType,
+        code: ZodIssueCode.invalid_type
+      });
+      return INVALID;
+    }
+    if (!this._cache) {
+      this._cache = new Set(util.getValidEnumValues(this._def.values));
+    }
+    if (!this._cache.has(input.data)) {
+      const expectedValues = util.objectValues(nativeEnumValues);
+      addIssueToContext(ctx, {
+        received: ctx.data,
+        code: ZodIssueCode.invalid_enum_value,
+        options: expectedValues
+      });
+      return INVALID;
+    }
+    return OK(input.data);
+  }
+  get enum() {
+    return this._def.values;
+  }
+};
+ZodNativeEnum.create = (values, params) => {
+  return new ZodNativeEnum({
+    values,
+    typeName: ZodFirstPartyTypeKind.ZodNativeEnum,
+    ...processCreateParams(params)
+  });
+};
+var ZodPromise = class extends ZodType {
+  unwrap() {
+    return this._def.type;
+  }
+  _parse(input) {
+    const { ctx } = this._processInputParams(input);
+    if (ctx.parsedType !== ZodParsedType.promise && ctx.common.async === false) {
+      addIssueToContext(ctx, {
+        code: ZodIssueCode.invalid_type,
+        expected: ZodParsedType.promise,
+        received: ctx.parsedType
+      });
+      return INVALID;
+    }
+    const promisified = ctx.parsedType === ZodParsedType.promise ? ctx.data : Promise.resolve(ctx.data);
+    return OK(promisified.then((data) => {
+      return this._def.type.parseAsync(data, {
+        path: ctx.path,
+        errorMap: ctx.common.contextualErrorMap
+      });
+    }));
+  }
+};
+ZodPromise.create = (schema, params) => {
+  return new ZodPromise({
+    type: schema,
+    typeName: ZodFirstPartyTypeKind.ZodPromise,
+    ...processCreateParams(params)
+  });
+};
+var ZodEffects = class extends ZodType {
+  innerType() {
+    return this._def.schema;
+  }
+  sourceType() {
+    return this._def.schema._def.typeName === ZodFirstPartyTypeKind.ZodEffects ? this._def.schema.sourceType() : this._def.schema;
+  }
+  _parse(input) {
+    const { status, ctx } = this._processInputParams(input);
+    const effect = this._def.effect || null;
+    const checkCtx = {
+      addIssue: (arg) => {
+        addIssueToContext(ctx, arg);
+        if (arg.fatal) {
+          status.abort();
+        } else {
+          status.dirty();
+        }
+      },
+      get path() {
+        return ctx.path;
+      }
+    };
+    checkCtx.addIssue = checkCtx.addIssue.bind(checkCtx);
+    if (effect.type === "preprocess") {
+      const processed = effect.transform(ctx.data, checkCtx);
+      if (ctx.common.async) {
+        return Promise.resolve(processed).then(async (processed2) => {
+          if (status.value === "aborted")
+            return INVALID;
+          const result = await this._def.schema._parseAsync({
+            data: processed2,
+            path: ctx.path,
+            parent: ctx
+          });
+          if (result.status === "aborted")
+            return INVALID;
+          if (result.status === "dirty")
+            return DIRTY(result.value);
+          if (status.value === "dirty")
+            return DIRTY(result.value);
+          return result;
+        });
+      } else {
+        if (status.value === "aborted")
+          return INVALID;
+        const result = this._def.schema._parseSync({
+          data: processed,
+          path: ctx.path,
+          parent: ctx
+        });
+        if (result.status === "aborted")
+          return INVALID;
+        if (result.status === "dirty")
+          return DIRTY(result.value);
+        if (status.value === "dirty")
+          return DIRTY(result.value);
+        return result;
+      }
+    }
+    if (effect.type === "refinement") {
+      const executeRefinement = (acc) => {
+        const result = effect.refinement(acc, checkCtx);
+        if (ctx.common.async) {
+          return Promise.resolve(result);
+        }
+        if (result instanceof Promise) {
+          throw new Error("Async refinement encountered during synchronous parse operation. Use .parseAsync instead.");
+        }
+        return acc;
+      };
+      if (ctx.common.async === false) {
+        const inner = this._def.schema._parseSync({
+          data: ctx.data,
+          path: ctx.path,
+          parent: ctx
+        });
+        if (inner.status === "aborted")
+          return INVALID;
+        if (inner.status === "dirty")
+          status.dirty();
+        executeRefinement(inner.value);
+        return { status: status.value, value: inner.value };
+      } else {
+        return this._def.schema._parseAsync({ data: ctx.data, path: ctx.path, parent: ctx }).then((inner) => {
+          if (inner.status === "aborted")
+            return INVALID;
+          if (inner.status === "dirty")
+            status.dirty();
+          return executeRefinement(inner.value).then(() => {
+            return { status: status.value, value: inner.value };
+          });
+        });
+      }
+    }
+    if (effect.type === "transform") {
+      if (ctx.common.async === false) {
+        const base = this._def.schema._parseSync({
+          data: ctx.data,
+          path: ctx.path,
+          parent: ctx
+        });
+        if (!isValid(base))
+          return INVALID;
+        const result = effect.transform(base.value, checkCtx);
+        if (result instanceof Promise) {
+          throw new Error(`Asynchronous transform encountered during synchronous parse operation. Use .parseAsync instead.`);
+        }
+        return { status: status.value, value: result };
+      } else {
+        return this._def.schema._parseAsync({ data: ctx.data, path: ctx.path, parent: ctx }).then((base) => {
+          if (!isValid(base))
+            return INVALID;
+          return Promise.resolve(effect.transform(base.value, checkCtx)).then((result) => ({
+            status: status.value,
+            value: result
+          }));
+        });
+      }
+    }
+    util.assertNever(effect);
+  }
+};
+ZodEffects.create = (schema, effect, params) => {
+  return new ZodEffects({
+    schema,
+    typeName: ZodFirstPartyTypeKind.ZodEffects,
+    effect,
+    ...processCreateParams(params)
+  });
+};
+ZodEffects.createWithPreprocess = (preprocess, schema, params) => {
+  return new ZodEffects({
+    schema,
+    effect: { type: "preprocess", transform: preprocess },
+    typeName: ZodFirstPartyTypeKind.ZodEffects,
+    ...processCreateParams(params)
+  });
+};
+var ZodOptional = class extends ZodType {
+  _parse(input) {
+    const parsedType = this._getType(input);
+    if (parsedType === ZodParsedType.undefined) {
+      return OK(void 0);
+    }
+    return this._def.innerType._parse(input);
+  }
+  unwrap() {
+    return this._def.innerType;
+  }
+};
+ZodOptional.create = (type, params) => {
+  return new ZodOptional({
+    innerType: type,
+    typeName: ZodFirstPartyTypeKind.ZodOptional,
+    ...processCreateParams(params)
+  });
+};
+var ZodNullable = class extends ZodType {
+  _parse(input) {
+    const parsedType = this._getType(input);
+    if (parsedType === ZodParsedType.null) {
+      return OK(null);
+    }
+    return this._def.innerType._parse(input);
+  }
+  unwrap() {
+    return this._def.innerType;
+  }
+};
+ZodNullable.create = (type, params) => {
+  return new ZodNullable({
+    innerType: type,
+    typeName: ZodFirstPartyTypeKind.ZodNullable,
+    ...processCreateParams(params)
+  });
+};
+var ZodDefault = class extends ZodType {
+  _parse(input) {
+    const { ctx } = this._processInputParams(input);
+    let data = ctx.data;
+    if (ctx.parsedType === ZodParsedType.undefined) {
+      data = this._def.defaultValue();
+    }
+    return this._def.innerType._parse({
+      data,
+      path: ctx.path,
+      parent: ctx
+    });
+  }
+  removeDefault() {
+    return this._def.innerType;
+  }
+};
+ZodDefault.create = (type, params) => {
+  return new ZodDefault({
+    innerType: type,
+    typeName: ZodFirstPartyTypeKind.ZodDefault,
+    defaultValue: typeof params.default === "function" ? params.default : () => params.default,
+    ...processCreateParams(params)
+  });
+};
+var ZodCatch = class extends ZodType {
+  _parse(input) {
+    const { ctx } = this._processInputParams(input);
+    const newCtx = {
+      ...ctx,
+      common: {
+        ...ctx.common,
+        issues: []
+      }
+    };
+    const result = this._def.innerType._parse({
+      data: newCtx.data,
+      path: newCtx.path,
+      parent: {
+        ...newCtx
+      }
+    });
+    if (isAsync(result)) {
+      return result.then((result2) => {
+        return {
+          status: "valid",
+          value: result2.status === "valid" ? result2.value : this._def.catchValue({
+            get error() {
+              return new ZodError(newCtx.common.issues);
+            },
+            input: newCtx.data
+          })
+        };
+      });
+    } else {
+      return {
+        status: "valid",
+        value: result.status === "valid" ? result.value : this._def.catchValue({
+          get error() {
+            return new ZodError(newCtx.common.issues);
+          },
+          input: newCtx.data
+        })
+      };
+    }
+  }
+  removeCatch() {
+    return this._def.innerType;
+  }
+};
+ZodCatch.create = (type, params) => {
+  return new ZodCatch({
+    innerType: type,
+    typeName: ZodFirstPartyTypeKind.ZodCatch,
+    catchValue: typeof params.catch === "function" ? params.catch : () => params.catch,
+    ...processCreateParams(params)
+  });
+};
+var ZodNaN = class extends ZodType {
+  _parse(input) {
+    const parsedType = this._getType(input);
+    if (parsedType !== ZodParsedType.nan) {
+      const ctx = this._getOrReturnCtx(input);
+      addIssueToContext(ctx, {
+        code: ZodIssueCode.invalid_type,
+        expected: ZodParsedType.nan,
+        received: ctx.parsedType
+      });
+      return INVALID;
+    }
+    return { status: "valid", value: input.data };
+  }
+};
+ZodNaN.create = (params) => {
+  return new ZodNaN({
+    typeName: ZodFirstPartyTypeKind.ZodNaN,
+    ...processCreateParams(params)
+  });
+};
+var BRAND = Symbol("zod_brand");
+var ZodBranded = class extends ZodType {
+  _parse(input) {
+    const { ctx } = this._processInputParams(input);
+    const data = ctx.data;
+    return this._def.type._parse({
+      data,
+      path: ctx.path,
+      parent: ctx
+    });
+  }
+  unwrap() {
+    return this._def.type;
+  }
+};
+var ZodPipeline = class _ZodPipeline extends ZodType {
+  _parse(input) {
+    const { status, ctx } = this._processInputParams(input);
+    if (ctx.common.async) {
+      const handleAsync = async () => {
+        const inResult = await this._def.in._parseAsync({
+          data: ctx.data,
+          path: ctx.path,
+          parent: ctx
+        });
+        if (inResult.status === "aborted")
+          return INVALID;
+        if (inResult.status === "dirty") {
+          status.dirty();
+          return DIRTY(inResult.value);
+        } else {
+          return this._def.out._parseAsync({
+            data: inResult.value,
+            path: ctx.path,
+            parent: ctx
+          });
+        }
+      };
+      return handleAsync();
+    } else {
+      const inResult = this._def.in._parseSync({
+        data: ctx.data,
+        path: ctx.path,
+        parent: ctx
+      });
+      if (inResult.status === "aborted")
+        return INVALID;
+      if (inResult.status === "dirty") {
+        status.dirty();
+        return {
+          status: "dirty",
+          value: inResult.value
+        };
+      } else {
+        return this._def.out._parseSync({
+          data: inResult.value,
+          path: ctx.path,
+          parent: ctx
+        });
+      }
+    }
+  }
+  static create(a, b) {
+    return new _ZodPipeline({
+      in: a,
+      out: b,
+      typeName: ZodFirstPartyTypeKind.ZodPipeline
+    });
+  }
+};
+var ZodReadonly = class extends ZodType {
+  _parse(input) {
+    const result = this._def.innerType._parse(input);
+    const freeze = (data) => {
+      if (isValid(data)) {
+        data.value = Object.freeze(data.value);
+      }
+      return data;
+    };
+    return isAsync(result) ? result.then((data) => freeze(data)) : freeze(result);
+  }
+  unwrap() {
+    return this._def.innerType;
+  }
+};
+ZodReadonly.create = (type, params) => {
+  return new ZodReadonly({
+    innerType: type,
+    typeName: ZodFirstPartyTypeKind.ZodReadonly,
+    ...processCreateParams(params)
+  });
+};
+function cleanParams(params, data) {
+  const p = typeof params === "function" ? params(data) : typeof params === "string" ? { message: params } : params;
+  const p2 = typeof p === "string" ? { message: p } : p;
+  return p2;
+}
+function custom(check, _params = {}, fatal) {
+  if (check)
+    return ZodAny.create().superRefine((data, ctx) => {
+      const r = check(data);
+      if (r instanceof Promise) {
+        return r.then((r2) => {
+          if (!r2) {
+            const params = cleanParams(_params, data);
+            const _fatal = params.fatal ?? fatal ?? true;
+            ctx.addIssue({ code: "custom", ...params, fatal: _fatal });
+          }
+        });
+      }
+      if (!r) {
+        const params = cleanParams(_params, data);
+        const _fatal = params.fatal ?? fatal ?? true;
+        ctx.addIssue({ code: "custom", ...params, fatal: _fatal });
+      }
+      return;
+    });
+  return ZodAny.create();
+}
+var late = {
+  object: ZodObject.lazycreate
+};
+var ZodFirstPartyTypeKind;
+(function(ZodFirstPartyTypeKind2) {
+  ZodFirstPartyTypeKind2["ZodString"] = "ZodString";
+  ZodFirstPartyTypeKind2["ZodNumber"] = "ZodNumber";
+  ZodFirstPartyTypeKind2["ZodNaN"] = "ZodNaN";
+  ZodFirstPartyTypeKind2["ZodBigInt"] = "ZodBigInt";
+  ZodFirstPartyTypeKind2["ZodBoolean"] = "ZodBoolean";
+  ZodFirstPartyTypeKind2["ZodDate"] = "ZodDate";
+  ZodFirstPartyTypeKind2["ZodSymbol"] = "ZodSymbol";
+  ZodFirstPartyTypeKind2["ZodUndefined"] = "ZodUndefined";
+  ZodFirstPartyTypeKind2["ZodNull"] = "ZodNull";
+  ZodFirstPartyTypeKind2["ZodAny"] = "ZodAny";
+  ZodFirstPartyTypeKind2["ZodUnknown"] = "ZodUnknown";
+  ZodFirstPartyTypeKind2["ZodNever"] = "ZodNever";
+  ZodFirstPartyTypeKind2["ZodVoid"] = "ZodVoid";
+  ZodFirstPartyTypeKind2["ZodArray"] = "ZodArray";
+  ZodFirstPartyTypeKind2["ZodObject"] = "ZodObject";
+  ZodFirstPartyTypeKind2["ZodUnion"] = "ZodUnion";
+  ZodFirstPartyTypeKind2["ZodDiscriminatedUnion"] = "ZodDiscriminatedUnion";
+  ZodFirstPartyTypeKind2["ZodIntersection"] = "ZodIntersection";
+  ZodFirstPartyTypeKind2["ZodTuple"] = "ZodTuple";
+  ZodFirstPartyTypeKind2["ZodRecord"] = "ZodRecord";
+  ZodFirstPartyTypeKind2["ZodMap"] = "ZodMap";
+  ZodFirstPartyTypeKind2["ZodSet"] = "ZodSet";
+  ZodFirstPartyTypeKind2["ZodFunction"] = "ZodFunction";
+  ZodFirstPartyTypeKind2["ZodLazy"] = "ZodLazy";
+  ZodFirstPartyTypeKind2["ZodLiteral"] = "ZodLiteral";
+  ZodFirstPartyTypeKind2["ZodEnum"] = "ZodEnum";
+  ZodFirstPartyTypeKind2["ZodEffects"] = "ZodEffects";
+  ZodFirstPartyTypeKind2["ZodNativeEnum"] = "ZodNativeEnum";
+  ZodFirstPartyTypeKind2["ZodOptional"] = "ZodOptional";
+  ZodFirstPartyTypeKind2["ZodNullable"] = "ZodNullable";
+  ZodFirstPartyTypeKind2["ZodDefault"] = "ZodDefault";
+  ZodFirstPartyTypeKind2["ZodCatch"] = "ZodCatch";
+  ZodFirstPartyTypeKind2["ZodPromise"] = "ZodPromise";
+  ZodFirstPartyTypeKind2["ZodBranded"] = "ZodBranded";
+  ZodFirstPartyTypeKind2["ZodPipeline"] = "ZodPipeline";
+  ZodFirstPartyTypeKind2["ZodReadonly"] = "ZodReadonly";
+})(ZodFirstPartyTypeKind || (ZodFirstPartyTypeKind = {}));
+var instanceOfType = (cls, params = {
+  message: `Input not instance of ${cls.name}`
+}) => custom((data) => data instanceof cls, params);
+var stringType = ZodString.create;
+var numberType = ZodNumber.create;
+var nanType = ZodNaN.create;
+var bigIntType = ZodBigInt.create;
+var booleanType = ZodBoolean.create;
+var dateType = ZodDate.create;
+var symbolType = ZodSymbol.create;
+var undefinedType = ZodUndefined.create;
+var nullType = ZodNull.create;
+var anyType = ZodAny.create;
+var unknownType = ZodUnknown.create;
+var neverType = ZodNever.create;
+var voidType = ZodVoid.create;
+var arrayType = ZodArray.create;
+var objectType = ZodObject.create;
+var strictObjectType = ZodObject.strictCreate;
+var unionType = ZodUnion.create;
+var discriminatedUnionType = ZodDiscriminatedUnion.create;
+var intersectionType = ZodIntersection.create;
+var tupleType = ZodTuple.create;
+var recordType = ZodRecord.create;
+var mapType = ZodMap.create;
+var setType = ZodSet.create;
+var functionType = ZodFunction.create;
+var lazyType = ZodLazy.create;
+var literalType = ZodLiteral.create;
+var enumType = ZodEnum.create;
+var nativeEnumType = ZodNativeEnum.create;
+var promiseType = ZodPromise.create;
+var effectsType = ZodEffects.create;
+var optionalType = ZodOptional.create;
+var nullableType = ZodNullable.create;
+var preprocessType = ZodEffects.createWithPreprocess;
+var pipelineType = ZodPipeline.create;
+var ostring = () => stringType().optional();
+var onumber = () => numberType().optional();
+var oboolean = () => booleanType().optional();
+var coerce = {
+  string: (arg) => ZodString.create({ ...arg, coerce: true }),
+  number: (arg) => ZodNumber.create({ ...arg, coerce: true }),
+  boolean: (arg) => ZodBoolean.create({
+    ...arg,
+    coerce: true
+  }),
+  bigint: (arg) => ZodBigInt.create({ ...arg, coerce: true }),
+  date: (arg) => ZodDate.create({ ...arg, coerce: true })
+};
+var NEVER = INVALID;
+
+// src/services/validator.ts
+async function validateAndRepair(data, schema, llm, repairHint) {
+  const first = schema.safeParse(data);
+  if (first.success)
+    return first.data;
+  const issues = first.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ");
+  const repairPrompt = [
+    "The following JSON failed schema validation:",
+    "",
+    JSON.stringify(data, null, 2),
+    "",
+    `Validation errors: ${issues}`,
+    "",
+    repairHint,
+    "",
+    "Return ONLY the corrected JSON, no explanation."
+  ].join("\n");
+  const repaired = await llm.callJson(repairPrompt, {});
+  return schema.parse(repaired);
+}
+var TaxonomyNodeSchema = external_exports.lazy(
+  () => external_exports.object({
+    id: external_exports.string().min(1),
+    title: external_exports.string().min(1),
+    description: external_exports.string(),
+    children: external_exports.array(TaxonomyNodeSchema).optional()
+  })
+);
+var Stage0ResponseSchema = external_exports.object({
+  taxonomy: external_exports.array(TaxonomyNodeSchema).min(1)
+});
+var DisaggregateResponseSchema = external_exports.object({
+  nodes: external_exports.array(TaxonomyNodeSchema).min(2).max(6)
+});
+var ExpandResponseSchema = external_exports.object({
+  children: external_exports.array(TaxonomyNodeSchema).min(2).max(6)
+});
+var SuggestRelatedResponseSchema = external_exports.object({
+  topics: external_exports.array(TaxonomyNodeSchema).min(1).max(5)
+});
+var ConceptSchema = external_exports.object({
+  id: external_exports.string().min(1),
+  title: external_exports.string().min(1),
+  description: external_exports.string(),
+  sourceRefs: external_exports.array(external_exports.string()).optional()
+});
+var Stage1ResponseSchema = external_exports.object({
+  concepts: external_exports.array(ConceptSchema).min(1)
+});
+var LessonSpecSchema = external_exports.object({
+  lessonId: external_exports.string().min(1),
+  title: external_exports.string().min(1),
+  description: external_exports.string(),
+  prerequisites: external_exports.array(external_exports.string())
+});
+var ModuleSpecSchema = external_exports.object({
+  moduleId: external_exports.string().min(1),
+  title: external_exports.string().min(1),
+  description: external_exports.string(),
+  lessons: external_exports.array(LessonSpecSchema).min(1)
+});
+var CurriculumSchema = external_exports.object({
+  courseId: external_exports.string().min(1),
+  title: external_exports.string().min(1),
+  modules: external_exports.array(ModuleSpecSchema).min(1)
+});
+var Stage3ResponseSchema = external_exports.object({
+  curriculum: CurriculumSchema
+});
+var DifficultySchema = external_exports.string().transform((value) => normalizeDifficulty(value)).pipe(external_exports.enum(["intro", "intermediate", "advanced"]));
+var LessonDraftSchema = external_exports.object({
+  title: external_exports.string().min(1),
+  summary: external_exports.string().min(1),
+  difficulty: DifficultySchema,
+  bodyMarkdown: external_exports.string().min(1),
+  sourceRefs: external_exports.array(external_exports.string()).optional()
+}).transform((data) => ({
+  ...data,
+  sourceRefs: data.sourceRefs ?? []
+}));
+var Stage4LessonResponseSchema = external_exports.object({
+  lesson: LessonDraftSchema
+});
+function normalizeDifficulty(value) {
+  const normalized = value.trim().toLowerCase();
+  if (["intro", "beginner", "basic", "foundational", "foundation", "introductory"].includes(normalized)) {
+    return "intro";
+  }
+  if (["intermediate", "medium", "moderate"].includes(normalized)) {
+    return "intermediate";
+  }
+  if (["advanced", "expert", "hard", "deep-dive"].includes(normalized)) {
+    return "advanced";
+  }
+  return normalized;
+}
+
+// src/stages/stage1-concepts.ts
+var import_obsidian3 = require("obsidian");
+async function runStage1(plugin, courseId) {
+  if (!plugin.settings.openRouterApiKey) {
+    throw new Error("Add your OpenRouter API key in Delve settings before extracting concepts.");
+  }
+  await plugin.lockService.acquire(courseId, 1);
+  await plugin.cacheService.writeStage(courseId, 1, {
+    courseId,
+    concepts: [],
+    status: "pending",
+    startedAt: (/* @__PURE__ */ new Date()).toISOString()
+  });
+  try {
+    new import_obsidian3.Notice("Extracting concepts\u2026");
+    const stage0 = await plugin.cacheService.readStage(courseId, 0);
+    if (!stage0)
+      throw new Error("Stage 0 not complete \u2014 run the topic explorer first.");
+    const context = await plugin.contextService.build();
+    const promptConfig = await plugin.loadPrompt("stage1-concepts");
+    const scopeNodeTitles = stage0.selectedScope.map((id) => findNodeTitle(stage0.taxonomy, id)).filter((t) => t !== void 0).join(", ");
+    const raw = await plugin.llmService.callJson(
+      promptConfig.template,
+      {
+        topic: stage0.seedTopic,
+        scopeSummary: stage0.scopeSummary,
+        scopeNodes: scopeNodeTitles || stage0.scopeSummary,
+        contextSection: buildContextSection(context)
+      },
+      promptConfig.model
+    );
+    const validated = await validateAndRepair(
+      raw,
+      Stage1ResponseSchema,
+      plugin.llmService,
+      "Return { concepts: [...] } where each concept has id (kebab-case), title, description, and sourceRefs (array of strings, may be empty)."
+    );
+    const cache = {
+      courseId,
+      concepts: validated.concepts,
+      status: "complete",
+      completedAt: (/* @__PURE__ */ new Date()).toISOString()
+    };
+    await plugin.cacheService.writeStage(courseId, 1, cache);
+    await plugin.lockService.release();
+    const leaf = plugin.app.workspace.getLeaf(false);
+    await leaf.setViewState({
+      type: CONCEPTS_VIEW_TYPE,
+      active: true,
+      state: {
+        courseId,
+        seedTopic: stage0.seedTopic,
+        concepts: validated.concepts,
+        sourceMode: context.mode,
+        fileCount: context.fileCount
+      }
+    });
+    plugin.app.workspace.revealLeaf(leaf);
+  } catch (e) {
+    await plugin.lockService.release();
+    new import_obsidian3.Notice(`Delve: concept extraction failed \u2014 ${e.message}`);
+    throw e;
+  }
+}
+function buildContextSection(context) {
+  if (context.mode === "knowledge-only" || !context.content) {
+    return "No source material has been provided. Draw entirely on your general knowledge.";
+  }
+  return `The learner has provided ${context.fileCount} source file(s). Prefer this material where it is strong; supplement with general knowledge where it is absent or incomplete.
+
+${context.content}`;
+}
+function findNodeTitle(taxonomy, id) {
+  for (const n of taxonomy) {
+    if (n.id === id)
+      return n.title;
+    if (n.children) {
+      const found = findNodeTitle(n.children, id);
+      if (found)
+        return found;
+    }
+  }
+  return void 0;
+}
+
+// src/stages/stage0-topic.ts
+async function runStage0(plugin, seedTopic, courseId) {
+  await plugin.lockService.acquire(courseId, 0);
+  await plugin.cacheService.writeStage(courseId, 0, {
+    courseId,
+    seedTopic,
+    taxonomy: [],
+    selectedScope: [],
+    scopeSummary: "",
+    status: "pending",
+    startedAt: (/* @__PURE__ */ new Date()).toISOString()
+  });
+  try {
+    new import_obsidian4.Notice("Generating topic taxonomy\u2026");
+    const promptConfig = await plugin.loadPrompt("stage0-taxonomy");
+    const raw = await plugin.llmService.callJson(
+      promptConfig.template,
+      { topic: seedTopic },
+      promptConfig.model
+    );
+    const validated = await validateAndRepair(
+      raw,
+      Stage0ResponseSchema,
+      plugin.llmService,
+      "Fix the taxonomy JSON so every node has id (kebab-case string), title, and description."
+    );
+    await plugin.cacheService.writeStage(courseId, 0, {
+      courseId,
+      seedTopic,
+      taxonomy: validated.taxonomy,
+      selectedScope: [],
+      scopeSummary: "",
+      status: "pending",
+      startedAt: (/* @__PURE__ */ new Date()).toISOString()
+    });
+    const leaf = plugin.app.workspace.getLeaf(false);
+    await leaf.setViewState({
+      type: TAXONOMY_VIEW_TYPE,
+      active: true,
+      state: { courseId, seedTopic, taxonomy: validated.taxonomy }
+    });
+    plugin.app.workspace.revealLeaf(leaf);
+  } catch (e) {
+    await plugin.lockService.release();
+    new import_obsidian4.Notice(`Delve: taxonomy generation failed \u2014 ${e.message}`);
+    throw e;
+  }
+}
+async function disaggregateNode(plugin, seedTopic, node, selectedScope) {
+  const promptConfig = await plugin.loadPrompt("stage0-disaggregate");
+  const raw = await plugin.llmService.callJson(
+    promptConfig.template,
+    {
+      topic: seedTopic,
+      nodeTitle: node.title,
+      nodeDescription: node.description,
+      selectedScope: selectedScope.join(", ") || "none selected yet"
+    },
+    promptConfig.model
+  );
+  const validated = await validateAndRepair(
+    raw,
+    DisaggregateResponseSchema,
+    plugin.llmService,
+    "Return { nodes: [...] } with 2\u20135 TaxonomyNode items each having id, title, description."
+  );
+  return validated.nodes;
+}
+async function expandNode(plugin, seedTopic, node) {
+  const promptConfig = await plugin.loadPrompt("stage0-expand");
+  const raw = await plugin.llmService.callJson(
+    promptConfig.template,
+    {
+      topic: seedTopic,
+      nodeTitle: node.title,
+      nodeDescription: node.description
+    },
+    promptConfig.model
+  );
+  const validated = await validateAndRepair(
+    raw,
+    ExpandResponseSchema,
+    plugin.llmService,
+    "Return { children: [...] } with 3\u20136 TaxonomyNode items each having id, title, description."
+  );
+  return validated.children;
+}
+async function suggestRelated(plugin, seedTopic, existingTaxonomy, selectedScope) {
+  const promptConfig = await plugin.loadPrompt("stage0-suggest-related");
+  const existingTitles = existingTaxonomy.map((n) => n.title).join(", ");
+  const raw = await plugin.llmService.callJson(
+    promptConfig.template,
+    {
+      topic: seedTopic,
+      existingTopics: existingTitles,
+      selectedScope: selectedScope.join(", ") || "none selected yet"
+    },
+    promptConfig.model
+  );
+  const validated = await validateAndRepair(
+    raw,
+    SuggestRelatedResponseSchema,
+    plugin.llmService,
+    "Return { topics: [...] } with 2\u20135 TaxonomyNode items not already in the existing list."
+  );
+  return validated.topics;
+}
+async function confirmScope(plugin, courseId, seedTopic, taxonomy, selectedScope) {
+  const scopeSummary = selectedScope.map((id) => findNode(taxonomy, id)?.title ?? id).join(", ");
+  const cache = {
+    courseId,
+    seedTopic,
+    taxonomy,
+    selectedScope,
+    scopeSummary,
+    status: "complete",
+    completedAt: (/* @__PURE__ */ new Date()).toISOString()
+  };
+  await plugin.cacheService.writeStage(courseId, 0, cache);
+  await plugin.lockService.release();
+  await runStage1(plugin, courseId);
+}
+function replaceNode(taxonomy, targetId, replacements) {
+  const result = [];
+  for (const node of taxonomy) {
+    if (node.id === targetId) {
+      result.push(...replacements);
+    } else {
+      result.push({
+        ...node,
+        children: node.children ? replaceNode(node.children, targetId, replacements) : void 0
+      });
+    }
+  }
+  return result;
+}
+function addChildren(taxonomy, targetId, newChildren) {
+  return taxonomy.map((node) => {
+    if (node.id === targetId) {
+      return { ...node, children: [...node.children ?? [], ...newChildren] };
+    }
+    if (node.children) {
+      return { ...node, children: addChildren(node.children, targetId, newChildren) };
+    }
+    return node;
+  });
+}
+function appendTopLevel(taxonomy, nodes) {
+  return [...taxonomy, ...nodes];
+}
+function findNode(nodes, id) {
+  for (const n of nodes) {
+    if (n.id === id)
+      return n;
+    if (n.children) {
+      const found = findNode(n.children, id);
+      if (found)
+        return found;
+    }
+  }
+  return void 0;
+}
+
+// src/ui/topic-input-modal.ts
+var TopicInputModal = class extends import_obsidian5.Modal {
+  constructor(app, plugin) {
+    super(app);
+    this.plugin = plugin;
+    __publicField(this, "topic", "");
+    __publicField(this, "courseId");
+    this.courseId = generateCourseId();
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.addClass("delve-topic-input");
+    contentEl.createEl("h2", { text: "Start a New Course" });
+    contentEl.createEl("p", {
+      text: "Enter a broad topic and Delve will build a personalised course for you.",
+      cls: "delve-subtitle"
+    });
+    new import_obsidian5.Setting(contentEl).setName("Topic").setDesc("e.g. \u201CMachine Learning\u201D, \u201CLinear Algebra\u201D, \u201CKubernetes\u201D").addText((text) => {
+      text.setPlaceholder("Enter your topic\u2026").onChange((v) => {
+        this.topic = v.trim();
+      });
+      text.inputEl.addClass("delve-topic-input__field");
+      text.inputEl.addEventListener("keydown", (e) => {
+        if (e.key === "Enter")
+          void this.submit();
+      });
+      setTimeout(() => text.inputEl.focus(), 50);
+    });
+    const btnRow = contentEl.createDiv("delve-topic-input__actions");
+    const startBtn = btnRow.createEl("button", {
+      text: "Build Course",
+      cls: "mod-cta delve-btn-primary"
+    });
+    startBtn.addEventListener("click", () => void this.submit());
+  }
+  async submit() {
+    if (!this.topic) {
+      new import_obsidian5.Notice("Please enter a topic.");
+      return;
+    }
+    if (!this.plugin.settings.openRouterApiKey) {
+      new import_obsidian5.Notice("Add your OpenRouter API key in Delve settings first.");
+      return;
+    }
+    this.close();
+    await runStage0(this.plugin, this.topic, this.courseId);
+  }
+  onClose() {
+    this.contentEl.empty();
+  }
+};
+function generateCourseId() {
+  return Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+}
+
+// src/ui/taxonomy-view.ts
+var import_obsidian6 = require("obsidian");
+var TaxonomyView = class extends import_obsidian6.ItemView {
+  constructor(leaf, plugin) {
+    super(leaf);
+    this.plugin = plugin;
+    __publicField(this, "state", { courseId: "", seedTopic: "", taxonomy: [] });
+    __publicField(this, "taxonomy", []);
+    __publicField(this, "selected", /* @__PURE__ */ new Set());
+    __publicField(this, "loadingNodes", /* @__PURE__ */ new Set());
+    __publicField(this, "suggestingRelated", false);
+    __publicField(this, "confirming", false);
+  }
+  getViewType() {
+    return TAXONOMY_VIEW_TYPE;
+  }
+  getDisplayText() {
+    return this.state.seedTopic ? `Scope: ${this.state.seedTopic}` : "Delve: Scope";
+  }
+  getIcon() {
+    return "map";
+  }
+  async setState(state, _result) {
+    const nextState = state;
+    this.state = nextState;
+    this.taxonomy = deepClone(nextState.taxonomy);
+    await this.render();
+  }
+  getState() {
+    return { ...this.state, taxonomy: this.taxonomy };
+  }
+  async onOpen() {
+    if (this.state.taxonomy.length > 0)
+      await this.render();
+  }
+  async onClose() {
+    this.contentEl.empty();
+  }
+  async render() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.addClass("delve-taxonomy");
+    const header = contentEl.createDiv("delve-taxonomy__header");
+    header.createEl("h2", { text: this.state.seedTopic });
+    header.createEl("p", {
+      text: "Select areas to cover. Use Split or Expand on any node, or suggest additional topics.",
+      cls: "delve-taxonomy__hint"
+    });
+    if (this.suggestingRelated) {
+      header.createDiv("delve-taxonomy__suggest-loading").textContent = "Finding related topics\u2026";
+    } else {
+      const suggestBtn = header.createEl("button", {
+        text: "+ Suggest related topics",
+        cls: "delve-taxonomy__action-btn delve-taxonomy__suggest-btn",
+        title: "Ask the model to suggest additional top-level topics related to this subject"
+      });
+      suggestBtn.disabled = this.confirming;
+      suggestBtn.addEventListener("click", () => void this.handleSuggestRelated());
+    }
+    const tree = contentEl.createDiv("delve-taxonomy__tree");
+    for (const node of this.taxonomy) {
+      this.renderNode(tree, node, 0);
+    }
+    const footer = contentEl.createDiv("delve-taxonomy__footer");
+    const confirmBtn = footer.createEl("button", {
+      text: "Select topics to continue",
+      cls: "mod-cta delve-btn-primary delve-taxonomy__confirm"
+    });
+    confirmBtn.disabled = true;
+    confirmBtn.addEventListener("click", () => void this.handleConfirm());
+    this.syncConfirmButton(confirmBtn);
+    if (!this.plugin.settings.openRouterApiKey) {
+      footer.createDiv("delve-taxonomy__confirm-loading").textContent = "Add your OpenRouter API key in Delve settings before continuing.";
+    }
+    if (this.confirming) {
+      footer.createDiv("delve-taxonomy__confirm-loading").textContent = "Saving scope and extracting concepts\u2026";
+    }
+  }
+  renderNode(parent, node, depth) {
+    const item = parent.createDiv({
+      cls: `delve-taxonomy__item delve-taxonomy__item--depth-${depth}`
+    });
+    const row = item.createDiv("delve-taxonomy__row");
+    const cbId = `delve-node-${node.id}`;
+    const checkbox = row.createEl("input");
+    checkbox.type = "checkbox";
+    checkbox.className = "delve-taxonomy__checkbox";
+    checkbox.id = cbId;
+    checkbox.checked = this.selected.has(node.id);
+    const label = row.createEl("label", { cls: "delve-taxonomy__label" });
+    label.htmlFor = cbId;
+    label.createEl("span", { text: node.title, cls: "delve-taxonomy__title" });
+    if (node.description) {
+      label.createEl("span", { text: node.description, cls: "delve-taxonomy__desc" });
+    }
+    checkbox.addEventListener("change", () => {
+      this.toggleNode(node, checkbox.checked);
+      this.syncCheckboxes();
+      const btn = this.contentEl.querySelector(
+        ".delve-taxonomy__confirm"
+      );
+      if (btn)
+        this.syncConfirmButton(btn);
+    });
+    if (this.loadingNodes.has(node.id)) {
+      row.createDiv("delve-taxonomy__node-loading").textContent = "Thinking\u2026";
+    } else {
+      const actions = row.createDiv("delve-taxonomy__node-actions");
+      const splitBtn = actions.createEl("button", {
+        text: "Split",
+        cls: "delve-taxonomy__action-btn",
+        title: "Replace this topic with more specific alternatives at the same level"
+      });
+      splitBtn.disabled = this.confirming;
+      splitBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        void this.handleDisaggregate(node);
+      });
+      const expandBtn = actions.createEl("button", {
+        text: "Expand",
+        cls: "delve-taxonomy__action-btn",
+        title: "Add detailed subtopics below this item"
+      });
+      expandBtn.disabled = this.confirming;
+      expandBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        void this.handleExpand(node);
+      });
+    }
+    if (node.children?.length) {
+      const children = item.createDiv("delve-taxonomy__children");
+      for (const child of node.children) {
+        this.renderNode(children, child, depth + 1);
+      }
+    }
+  }
+  toggleNode(node, checked) {
+    if (checked)
+      this.selected.add(node.id);
+    else
+      this.selected.delete(node.id);
+    for (const child of node.children ?? [])
+      this.toggleNode(child, checked);
+  }
+  syncCheckboxes() {
+    for (const node of flattenNodes(this.taxonomy)) {
+      const cb = this.contentEl.querySelector(
+        `#delve-node-${node.id}`
+      );
+      if (cb)
+        cb.checked = this.selected.has(node.id);
+    }
+  }
+  syncConfirmButton(btn) {
+    const count = this.selected.size;
+    const missingApiKey = !this.plugin.settings.openRouterApiKey;
+    btn.disabled = count === 0 || this.confirming || missingApiKey;
+    btn.textContent = this.confirming ? "Preparing concepts\u2026" : missingApiKey ? "Add API key in settings to continue" : count > 0 ? `Confirm Scope (${count} selected)` : "Select topics to continue";
+  }
+  async handleDisaggregate(node) {
+    this.loadingNodes.add(node.id);
+    await this.render();
+    try {
+      const newNodes = await disaggregateNode(
+        this.plugin,
+        this.state.seedTopic,
+        node,
+        Array.from(this.selected)
+      );
+      this.taxonomy = replaceNode(this.taxonomy, node.id, newNodes);
+      this.selected.delete(node.id);
+    } catch (e) {
+      new import_obsidian6.Notice(`Split failed: ${e.message}`);
+    } finally {
+      this.loadingNodes.delete(node.id);
+      await this.render();
+    }
+  }
+  async handleExpand(node) {
+    this.loadingNodes.add(node.id);
+    await this.render();
+    try {
+      const children = await expandNode(this.plugin, this.state.seedTopic, node);
+      this.taxonomy = addChildren(this.taxonomy, node.id, children);
+    } catch (e) {
+      new import_obsidian6.Notice(`Expand failed: ${e.message}`);
+    } finally {
+      this.loadingNodes.delete(node.id);
+      await this.render();
+    }
+  }
+  async handleSuggestRelated() {
+    this.suggestingRelated = true;
+    await this.render();
+    try {
+      const newTopics = await suggestRelated(
+        this.plugin,
+        this.state.seedTopic,
+        this.taxonomy,
+        Array.from(this.selected)
+      );
+      this.taxonomy = appendTopLevel(this.taxonomy, newTopics);
+    } catch (e) {
+      new import_obsidian6.Notice(`Suggest failed: ${e.message}`);
+    } finally {
+      this.suggestingRelated = false;
+      await this.render();
+    }
+  }
+  async handleConfirm() {
+    if (!this.plugin.settings.openRouterApiKey) {
+      new import_obsidian6.Notice("Add your OpenRouter API key in Delve settings before continuing.");
+      return;
+    }
+    this.confirming = true;
+    await this.render();
+    try {
+      await confirmScope(
+        this.plugin,
+        this.state.courseId,
+        this.state.seedTopic,
+        this.taxonomy,
+        Array.from(this.selected)
+      );
+    } catch (e) {
+      this.confirming = false;
+      await this.render();
+      new import_obsidian6.Notice(`Could not continue to concept extraction: ${e.message}`);
+    }
+  }
+};
+function flattenNodes(nodes) {
+  const result = [];
+  function walk(arr) {
+    for (const n of arr) {
+      result.push(n);
+      if (n.children)
+        walk(n.children);
+    }
+  }
+  walk(nodes);
+  return result;
+}
+function deepClone(obj) {
+  return JSON.parse(JSON.stringify(obj));
+}
+
+// src/ui/concepts-view.ts
+var import_obsidian8 = require("obsidian");
+
+// src/stages/stage2-diagnostic.ts
+var import_obsidian7 = require("obsidian");
+async function runStage2(plugin, courseId) {
+  const stage1 = await plugin.cacheService.readStage(courseId, 1);
+  if (!stage1)
+    throw new Error("Stage 1 not complete \u2014 run concept extraction first.");
+  const stage0 = await plugin.cacheService.readStage(courseId, 0);
+  const stage2 = await plugin.cacheService.readStage(courseId, 2);
+  await plugin.lockService.acquire(courseId, 2);
+  const leaf = plugin.app.workspace.getLeaf(false);
+  await leaf.setViewState({
+    type: DIAGNOSTIC_VIEW_TYPE,
+    active: true,
+    state: {
+      courseId,
+      seedTopic: stage0?.seedTopic ?? "",
+      concepts: stage1.concepts,
+      savedProficiencyMap: stage2?.proficiencyMap
+    }
+  });
+  plugin.app.workspace.revealLeaf(leaf);
+}
+async function confirmDiagnostic(plugin, courseId, proficiencyMap) {
+  const cache = {
+    courseId,
+    proficiencyMap,
+    completedAt: (/* @__PURE__ */ new Date()).toISOString()
+  };
+  await plugin.cacheService.writeStage(courseId, 2, cache);
+  await plugin.lockService.release();
+  new import_obsidian7.Notice("Assessment saved.");
+}
+
+// src/ui/concepts-view.ts
+var ConceptsView = class extends import_obsidian8.ItemView {
+  constructor(leaf, plugin) {
+    super(leaf);
+    this.plugin = plugin;
+    __publicField(this, "state", {
+      courseId: "",
+      seedTopic: "",
+      concepts: [],
+      sourceMode: "knowledge-only",
+      fileCount: 0
+    });
+    __publicField(this, "regenerating", false);
+  }
+  getViewType() {
+    return CONCEPTS_VIEW_TYPE;
+  }
+  getDisplayText() {
+    return this.state.seedTopic ? `Concepts: ${this.state.seedTopic}` : "Delve: Concepts";
+  }
+  getIcon() {
+    return "list";
+  }
+  async setState(state, _result) {
+    this.state = state;
+    this.regenerating = false;
+    await this.render();
+  }
+  getState() {
+    return this.state;
+  }
+  async onOpen() {
+    if (this.state.concepts.length > 0)
+      await this.render();
+  }
+  async onClose() {
+    this.contentEl.empty();
+  }
+  async render() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.addClass("delve-concepts");
+    const header = contentEl.createDiv("delve-concepts__header");
+    header.createEl("h2", { text: `Concepts: ${this.state.seedTopic}` });
+    const meta = header.createDiv("delve-concepts__meta");
+    const modeText = {
+      "knowledge-only": "Knowledge-only",
+      "grounded": `Grounded \u2014 ${this.state.fileCount} source file${this.state.fileCount !== 1 ? "s" : ""}`,
+      "augmented": `Augmented \u2014 ${this.state.fileCount} source file${this.state.fileCount !== 1 ? "s" : ""}`
+    };
+    meta.createEl("span", {
+      text: modeText[this.state.sourceMode],
+      cls: `delve-concepts__mode delve-concepts__mode--${this.state.sourceMode}`
+    });
+    meta.createEl("span", {
+      text: `${this.state.concepts.length} concepts extracted`,
+      cls: "delve-concepts__count"
+    });
+    const list = contentEl.createDiv("delve-concepts__list");
+    this.state.concepts.forEach((concept, i) => {
+      this.renderConcept(list, concept, i + 1);
+    });
+    const footer = contentEl.createDiv("delve-concepts__footer");
+    if (this.regenerating) {
+      footer.createDiv("delve-concepts__regen-loading").textContent = "Regenerating concepts\u2026";
+    } else {
+      const regenBtn = footer.createEl("button", {
+        text: "Regenerate",
+        cls: "delve-taxonomy__action-btn",
+        title: "Re-run concept extraction for this scope"
+      });
+      regenBtn.addEventListener("click", () => void this.handleRegenerate());
+    }
+    const proceedBtn = footer.createEl("button", {
+      text: "Start Self-Assessment \u2192",
+      cls: "mod-cta delve-btn-primary delve-concepts__proceed"
+    });
+    proceedBtn.addEventListener("click", () => void this.handleProceed());
+  }
+  renderConcept(parent, concept, index) {
+    const card = parent.createDiv("delve-concepts__card");
+    const titleRow = card.createDiv("delve-concepts__card-header");
+    titleRow.createEl("span", {
+      text: String(index),
+      cls: "delve-concepts__card-index"
+    });
+    titleRow.createEl("h3", {
+      text: concept.title,
+      cls: "delve-concepts__card-title"
+    });
+    card.createEl("p", {
+      text: concept.description,
+      cls: "delve-concepts__card-desc"
+    });
+    if (concept.sourceRefs?.length) {
+      const refs = card.createDiv("delve-concepts__card-refs");
+      refs.createEl("span", { text: "Sources: ", cls: "delve-concepts__card-refs-label" });
+      refs.createEl("span", {
+        text: concept.sourceRefs.join(", "),
+        cls: "delve-concepts__card-refs-list"
+      });
+    }
+  }
+  async handleRegenerate() {
+    this.regenerating = true;
+    await this.render();
+    try {
+      await runStage1(this.plugin, this.state.courseId);
+    } catch {
+      this.regenerating = false;
+      await this.render();
+    }
+  }
+  async handleProceed() {
+    try {
+      await runStage2(this.plugin, this.state.courseId);
+    } catch (e) {
+      new import_obsidian8.Notice(`Could not start self-assessment: ${e.message}`);
+    }
+  }
+};
+
+// src/ui/diagnostic-view.ts
+var import_obsidian10 = require("obsidian");
+
+// src/stages/stage3-curriculum.ts
+var import_obsidian9 = require("obsidian");
+async function runStage3(plugin, courseId) {
+  await plugin.lockService.acquire(courseId, 3);
+  const stage0 = await plugin.cacheService.readStage(courseId, 0);
+  const stage1 = await plugin.cacheService.readStage(courseId, 1);
+  const stage2 = await plugin.cacheService.readStage(courseId, 2);
+  if (!stage0 || !stage1 || !stage2) {
+    await plugin.lockService.release();
+    throw new Error("Stage 0, 1, and 2 must be complete before curriculum design can begin.");
+  }
+  const context = await plugin.contextService.build();
+  const placeholder = emptyCurriculum(courseId, stage0.seedTopic);
+  await plugin.cacheService.writeStage(courseId, 3, {
+    courseId,
+    curriculum: placeholder,
+    status: "pending",
+    startedAt: (/* @__PURE__ */ new Date()).toISOString()
+  });
+  const leaf = plugin.app.workspace.getLeaf(false);
+  await leaf.setViewState({
+    type: SYLLABUS_VIEW_TYPE,
+    active: true,
+    state: {
+      courseId,
+      seedTopic: stage0.seedTopic,
+      curriculum: placeholder,
+      sourceMode: context.mode,
+      fileCount: context.fileCount,
+      loading: true
+    }
+  });
+  plugin.app.workspace.revealLeaf(leaf);
+  try {
+    new import_obsidian9.Notice("Designing curriculum draft\u2026");
+    const promptConfig = await plugin.loadPrompt("stage3-curriculum");
+    const raw = await plugin.llmService.callJson(
+      promptConfig.template,
+      {
+        courseId,
+        topic: stage0.seedTopic,
+        scopeSummary: stage0.scopeSummary,
+        scopeNodes: buildScopeNodes(stage0.taxonomy, stage0.selectedScope) || stage0.scopeSummary,
+        conceptProficiency: buildConceptProficiency(stage1.concepts, stage2.proficiencyMap),
+        contextSection: buildContextSection2(context)
+      },
+      promptConfig.model
+    );
+    const validated = await validateAndRepair(
+      raw,
+      Stage3ResponseSchema,
+      plugin.llmService,
+      "Return { curriculum: { courseId, title, modules } } where each module has moduleId/title/description/lessons and each lesson has lessonId/title/description/prerequisites."
+    );
+    const curriculum = normalizeCurriculum(courseId, validated.curriculum);
+    const cache = {
+      courseId,
+      curriculum,
+      status: "complete",
+      startedAt: (/* @__PURE__ */ new Date()).toISOString(),
+      completedAt: (/* @__PURE__ */ new Date()).toISOString()
+    };
+    await plugin.cacheService.writeStage(courseId, 3, cache);
+    await plugin.lockService.release();
+    await leaf.setViewState({
+      type: SYLLABUS_VIEW_TYPE,
+      active: true,
+      state: {
+        courseId,
+        seedTopic: stage0.seedTopic,
+        curriculum,
+        sourceMode: context.mode,
+        fileCount: context.fileCount,
+        loading: false
+      }
+    });
+    plugin.app.workspace.revealLeaf(leaf);
+  } catch (e) {
+    await plugin.lockService.release();
+    new import_obsidian9.Notice(`Delve: curriculum design failed \u2014 ${e.message}`);
+    throw e;
+  }
+}
+async function resumeStage3(plugin, courseId) {
+  const stage0 = await plugin.cacheService.readStage(courseId, 0);
+  const stage3 = await plugin.cacheService.readStage(courseId, 3);
+  if (stage0 && stage3?.status === "complete") {
+    const context = await plugin.contextService.build();
+    const leaf = plugin.app.workspace.getLeaf(false);
+    await leaf.setViewState({
+      type: SYLLABUS_VIEW_TYPE,
+      active: true,
+      state: {
+        courseId,
+        seedTopic: stage0.seedTopic,
+        curriculum: stage3.curriculum,
+        sourceMode: context.mode,
+        fileCount: context.fileCount,
+        loading: false
+      }
+    });
+    plugin.app.workspace.revealLeaf(leaf);
+    await plugin.lockService.release();
+    return;
+  }
+  await runStage3(plugin, courseId);
+}
+function emptyCurriculum(courseId, seedTopic) {
+  return {
+    courseId,
+    title: `${seedTopic} Course`,
+    modules: []
+  };
+}
+function buildContextSection2(context) {
+  if (context.mode === "knowledge-only" || !context.content) {
+    return "No source material has been provided. Build the curriculum from general knowledge only.";
+  }
+  return `The learner has provided ${context.fileCount} source file(s). Prefer this material where it is strong; supplement with general knowledge where it is absent or incomplete.
+
+${context.content}`;
+}
+function buildScopeNodes(taxonomy, selectedScope) {
+  const titles = selectedScope.map((id) => findNodeTitle2(taxonomy, id)).filter((title) => Boolean(title));
+  return titles.join(", ");
+}
+function buildConceptProficiency(concepts, proficiencyMap) {
+  return JSON.stringify(
+    concepts.map((concept) => ({
+      id: concept.id,
+      title: concept.title,
+      description: concept.description,
+      sourceRefs: concept.sourceRefs ?? [],
+      proficiency: proficiencyMap[concept.id] ?? 1
+    })),
+    null,
+    2
+  );
+}
+function findNodeTitle2(taxonomy, id) {
+  for (const node of taxonomy) {
+    if (node.id === id)
+      return node.title;
+    if (node.children?.length) {
+      const child = findNodeTitle2(node.children, id);
+      if (child)
+        return child;
+    }
+  }
+  return void 0;
+}
+function normalizeCurriculum(courseId, curriculum) {
+  return {
+    ...curriculum,
+    courseId,
+    modules: curriculum.modules.map(normalizeModule)
+  };
+}
+function normalizeModule(module2, moduleIndex) {
+  const lessons = module2.lessons.map((lesson, lessonIndex) => normalizeLesson(lesson, lessonIndex));
+  const validLessonIds = new Set(lessons.map((lesson) => lesson.lessonId));
+  return {
+    ...module2,
+    moduleId: module2.moduleId || `module-${moduleIndex + 1}`,
+    lessons: lessons.map((lesson) => ({
+      ...lesson,
+      prerequisites: lesson.prerequisites.filter((prereq) => validLessonIds.has(prereq))
+    }))
+  };
+}
+function normalizeLesson(lesson, lessonIndex) {
+  return {
+    ...lesson,
+    lessonId: lesson.lessonId || `lesson-${lessonIndex + 1}`,
+    prerequisites: lesson.prerequisites ?? []
+  };
+}
+
+// src/ui/diagnostic-view.ts
+var LIKERT_LABELS = {
+  1: "New",
+  2: "Heard of it",
+  3: "Familiar",
+  4: "Confident",
+  5: "Expert"
+};
+var LIKERT_SCORES = [1, 2, 3, 4, 5];
+var DiagnosticView = class extends import_obsidian10.ItemView {
+  constructor(leaf, plugin) {
+    super(leaf);
+    this.plugin = plugin;
+    __publicField(this, "state", { courseId: "", seedTopic: "", concepts: [] });
+    __publicField(this, "ratings", /* @__PURE__ */ new Map());
+    __publicField(this, "submitting", false);
+    __publicField(this, "saved", false);
+    __publicField(this, "generatingCurriculum", false);
+    __publicField(this, "stage3Status", "none");
+  }
+  getViewType() {
+    return DIAGNOSTIC_VIEW_TYPE;
+  }
+  getDisplayText() {
+    return this.state.seedTopic ? `Assess: ${this.state.seedTopic}` : "Delve: Self-Assessment";
+  }
+  getIcon() {
+    return "gauge";
+  }
+  async setState(state, _result) {
+    this.state = await this.hydrateState(state);
+    this.ratings = new Map(
+      Object.entries(this.state.savedProficiencyMap ?? {})
+    );
+    this.submitting = false;
+    this.generatingCurriculum = false;
+    this.saved = this.ratings.size === this.state.concepts.length && this.ratings.size > 0;
+    await this.refreshStage3Status();
+    await this.render();
+  }
+  getState() {
+    return this.state;
+  }
+  async onOpen() {
+    if (this.state.concepts.length > 0) {
+      this.state = await this.hydrateState(this.state);
+      this.ratings = new Map(
+        Object.entries(this.state.savedProficiencyMap ?? {})
+      );
+      this.saved = this.ratings.size === this.state.concepts.length && this.ratings.size > 0;
+      this.generatingCurriculum = false;
+      await this.refreshStage3Status();
+      await this.render();
+    }
+  }
+  async onClose() {
+    this.contentEl.empty();
+  }
+  async render() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.addClass("delve-diagnostic");
+    const rated = this.ratings.size;
+    const total = this.state.concepts.length;
+    const header = contentEl.createDiv("delve-diagnostic__header");
+    header.createEl("h2", { text: `Self-Assessment: ${this.state.seedTopic}` });
+    header.createEl("p", {
+      text: "Rate your familiarity with each concept. Be honest \u2014 there are no wrong answers.",
+      cls: "delve-diagnostic__hint"
+    });
+    const progress = header.createDiv("delve-diagnostic__progress");
+    progress.createEl("span", {
+      text: `${rated} of ${total} rated`,
+      cls: rated === total && total > 0 ? "delve-diagnostic__progress--complete" : "delve-diagnostic__progress--partial"
+    });
+    const list = contentEl.createDiv("delve-diagnostic__list");
+    for (const concept of this.state.concepts) {
+      this.renderConceptCard(list, concept);
+    }
+    const footer = contentEl.createDiv("delve-diagnostic__footer");
+    if (this.submitting) {
+      footer.createDiv("delve-diagnostic__submitting").textContent = "Saving assessment\u2026";
+    } else if (this.generatingCurriculum) {
+      footer.createDiv("delve-diagnostic__submitting").textContent = "Designing curriculum draft\u2026";
+    } else if (this.saved) {
+      const savedBtn = footer.createEl("button", {
+        text: this.getSavedActionLabel(),
+        cls: "mod-cta delve-btn-primary delve-diagnostic__confirm"
+      });
+      savedBtn.disabled = false;
+      savedBtn.addEventListener("click", () => void this.handleSavedAction());
+      footer.createDiv("delve-diagnostic__submitting").textContent = this.getSavedActionHint();
+    } else {
+      const remaining = total - rated;
+      footer.addClass("delve-diagnostic__footer--ready");
+      const confirmBtn = footer.createEl("button", {
+        text: remaining === 0 ? "Build my curriculum \u2192" : `Rate all concepts to continue (${remaining} remaining)`,
+        cls: "mod-cta delve-btn-primary delve-diagnostic__confirm"
+      });
+      confirmBtn.disabled = remaining > 0;
+      this.bindConfirmActivation(confirmBtn, footer);
+    }
+  }
+  renderConceptCard(parent, concept) {
+    const card = parent.createDiv("delve-diagnostic__card");
+    const current = this.ratings.get(concept.id);
+    card.createEl("h3", { text: concept.title, cls: "delve-diagnostic__card-title" });
+    card.createEl("p", { text: concept.description, cls: "delve-diagnostic__card-desc" });
+    const scale = card.createDiv("delve-diagnostic__scale");
+    for (const score of LIKERT_SCORES) {
+      const btn = scale.createEl("button", {
+        cls: "delve-diagnostic__likert-btn" + (current === score ? " delve-diagnostic__likert-btn--selected" : ""),
+        title: LIKERT_LABELS[score]
+      });
+      btn.createEl("span", { text: String(score), cls: "delve-diagnostic__likert-num" });
+      btn.createEl("span", { text: LIKERT_LABELS[score], cls: "delve-diagnostic__likert-label" });
+      btn.addEventListener("click", () => {
+        this.ratings.set(concept.id, score);
+        if (this.saved) {
+          this.saved = false;
+          this.stage3Status = "none";
+          void this.render();
+          return;
+        }
+        this.syncCard(card, score);
+        this.syncFooter();
+        this.syncProgress();
+      });
+    }
+  }
+  syncCard(card, selected) {
+    card.querySelectorAll(".delve-diagnostic__likert-btn").forEach((btn, i) => {
+      btn.classList.toggle(
+        "delve-diagnostic__likert-btn--selected",
+        i + 1 === selected
+      );
+    });
+  }
+  syncFooter() {
+    if (this.saved)
+      return;
+    const remaining = this.state.concepts.length - this.ratings.size;
+    const btn = this.contentEl.querySelector(
+      ".delve-diagnostic__confirm"
+    );
+    if (!btn)
+      return;
+    btn.disabled = remaining > 0;
+    btn.textContent = remaining === 0 ? "Build my curriculum \u2192" : `Rate all concepts to continue (${remaining} remaining)`;
+  }
+  syncProgress() {
+    const rated = this.ratings.size;
+    const total = this.state.concepts.length;
+    const el = this.contentEl.querySelector(
+      ".delve-diagnostic__progress span"
+    );
+    if (!el)
+      return;
+    el.textContent = `${rated} of ${total} rated`;
+    el.className = rated === total ? "delve-diagnostic__progress--complete" : "delve-diagnostic__progress--partial";
+  }
+  async handleConfirm() {
+    if (this.ratings.size < this.state.concepts.length)
+      return;
+    this.submitting = true;
+    await this.render();
+    try {
+      const map = Object.fromEntries(this.ratings);
+      await confirmDiagnostic(this.plugin, this.state.courseId, map);
+      this.submitting = false;
+      this.saved = true;
+      this.generatingCurriculum = true;
+      this.stage3Status = "pending";
+      await this.render();
+      await runStage3(this.plugin, this.state.courseId);
+    } catch (e) {
+      this.submitting = false;
+      this.generatingCurriculum = false;
+      await this.refreshStage3Status();
+      new import_obsidian10.Notice(`Could not start curriculum design: ${e.message}`);
+      await this.render();
+    }
+  }
+  async handleSavedAction() {
+    if (!this.saved || this.submitting || this.generatingCurriculum)
+      return;
+    this.generatingCurriculum = true;
+    await this.render();
+    try {
+      await resumeStage3(this.plugin, this.state.courseId);
+    } catch (e) {
+      this.generatingCurriculum = false;
+      await this.refreshStage3Status();
+      new import_obsidian10.Notice(`Could not open curriculum design: ${e.message}`);
+      await this.render();
+    }
+  }
+  bindConfirmActivation(confirmBtn, footer) {
+    let activated = false;
+    const activate = () => {
+      if (activated || confirmBtn.disabled)
+        return;
+      activated = true;
+      void this.handleConfirm();
+    };
+    confirmBtn.addEventListener("click", activate);
+    confirmBtn.addEventListener("pointerdown", activate);
+    confirmBtn.addEventListener("mousedown", activate);
+    confirmBtn.addEventListener("touchend", activate, { passive: true });
+    confirmBtn.addEventListener("keydown", (evt) => {
+      if (evt.key === "Enter" || evt.key === " ") {
+        evt.preventDefault();
+        activate();
+      }
+    });
+    footer.addEventListener("pointerdown", (evt) => {
+      if (confirmBtn.disabled)
+        return;
+      const target = evt.target;
+      if (!target)
+        return;
+      if (target.closest(".delve-diagnostic__likert-btn"))
+        return;
+      activate();
+    });
+  }
+  async hydrateState(state) {
+    if (state.savedProficiencyMap || !state.courseId)
+      return state;
+    const stage2 = await this.plugin.cacheService.readStage(state.courseId, 2);
+    if (!stage2?.proficiencyMap)
+      return state;
+    return { ...state, savedProficiencyMap: stage2.proficiencyMap };
+  }
+  async refreshStage3Status() {
+    if (!this.state.courseId) {
+      this.stage3Status = "none";
+      return;
+    }
+    const stage3 = await this.plugin.cacheService.readStage(this.state.courseId, 3);
+    this.stage3Status = stage3?.status === "complete" ? "complete" : stage3?.status === "pending" ? "pending" : "none";
+  }
+  getSavedActionLabel() {
+    if (this.stage3Status === "complete")
+      return "Open curriculum draft \u2192";
+    if (this.stage3Status === "pending")
+      return "Resume curriculum design \u2192";
+    return "Build my curriculum \u2192";
+  }
+  getSavedActionHint() {
+    if (this.stage3Status === "complete") {
+      return "Assessment saved. Your curriculum draft is ready to review.";
+    }
+    if (this.stage3Status === "pending") {
+      return "Assessment saved. Resume curriculum design when you are ready.";
+    }
+    return "Assessment saved. Build the curriculum draft when you are ready.";
+  }
+};
+
+// src/ui/syllabus-editor-view.ts
+var import_obsidian12 = require("obsidian");
+
+// src/stages/stage4-generate.ts
+var import_obsidian11 = require("obsidian");
+
+// src/writers/canvas.ts
+async function writeCanvas(plugin, curriculum, canvasPath, lessonPaths, modulePaths, courseIndexPath) {
+  const nodes = [];
+  const edges = [];
+  nodes.push({
+    id: "course-index",
+    type: "file",
+    file: courseIndexPath,
+    x: 40,
+    y: 40,
+    width: 320,
+    height: 120
+  });
+  curriculum.modules.forEach((module2, moduleIndex) => {
+    const moduleNodeId = `module-${module2.moduleId}`;
+    nodes.push({
+      id: moduleNodeId,
+      type: "file",
+      file: modulePaths[module2.moduleId],
+      x: 420,
+      y: 40 + moduleIndex * 260,
+      width: 320,
+      height: 140
+    });
+    edges.push({
+      id: `edge-course-${module2.moduleId}`,
+      fromNode: "course-index",
+      toNode: moduleNodeId
+    });
+    module2.lessons.forEach((lesson, lessonIndex) => {
+      const lessonNodeId = `lesson-${lesson.lessonId}`;
+      nodes.push({
+        id: lessonNodeId,
+        type: "file",
+        file: lessonPaths[lesson.lessonId],
+        x: 840 + lessonIndex * 340,
+        y: 40 + moduleIndex * 260,
+        width: 300,
+        height: 140
+      });
+      edges.push({
+        id: `edge-module-${module2.moduleId}-${lesson.lessonId}`,
+        fromNode: moduleNodeId,
+        toNode: lessonNodeId
+      });
+      lesson.prerequisites.forEach((prereq) => {
+        edges.push({
+          id: `edge-prereq-${prereq}-${lesson.lessonId}`,
+          fromNode: `lesson-${prereq}`,
+          toNode: lessonNodeId
+        });
+      });
+    });
+  });
+  await plugin.app.vault.adapter.write(
+    canvasPath,
+    JSON.stringify({ nodes, edges }, null, 2)
+  );
+}
+
+// src/writers/frontmatter.ts
+function buildFrontmatter(data) {
+  const lines = ["---"];
+  for (const [key, value] of Object.entries(data)) {
+    if (Array.isArray(value)) {
+      lines.push(`${key}:`);
+      for (const item of value) {
+        lines.push(`  - ${escapeYaml(item)}`);
+      }
+      continue;
+    }
+    if (typeof value === "boolean") {
+      lines.push(`${key}: ${value ? "true" : "false"}`);
+      continue;
+    }
+    lines.push(`${key}: ${escapeYaml(value)}`);
+  }
+  lines.push("---");
+  return lines.join("\n");
+}
+function escapeYaml(value) {
+  if (value === "")
+    return '""';
+  if (/^[a-zA-Z0-9_.\/:-]+$/.test(value))
+    return value;
+  return JSON.stringify(value);
+}
+
+// src/writers/markdown.ts
+async function writeMarkdownFile(plugin, path, content) {
+  await plugin.app.vault.adapter.write(path, content.trimEnd() + "\n");
+}
+
+// src/writers/moc.ts
+async function writeModuleMoc(plugin, path, module2, courseIndexLink, lessonLinks) {
+  const content = [
+    `# ${module2.title}`,
+    "",
+    `Back to ${courseIndexLink}`,
+    "",
+    module2.description,
+    "",
+    "## Lessons",
+    "",
+    ...lessonLinks.map((link) => `- ${link}`)
+  ].join("\n");
+  await writeMarkdownFile(plugin, path, content);
+}
+
+// src/writers/navigation.ts
+function buildNavigationLinks(courseIndexLink, moduleLink, previousLessonLink, nextLessonLink) {
+  const breadcrumbs = `**Course:** ${courseIndexLink} > ${moduleLink}`;
+  const previous = previousLessonLink ? `Previous: ${previousLessonLink}` : "Previous: none";
+  const next = nextLessonLink ? `Next: ${nextLessonLink}` : "Next: none";
+  return {
+    breadcrumbs,
+    sequence: `${previous} | ${next}`
+  };
+}
+
+// src/stages/stage4-generate.ts
+async function runStage4(plugin, courseId) {
+  await plugin.lockService.acquire(courseId, 4);
+  try {
+    const stage0 = await plugin.cacheService.readStage(courseId, 0);
+    const stage3 = await plugin.cacheService.readStage(courseId, 3);
+    if (!stage0 || !stage3?.curriculum) {
+      throw new Error("Stage 0 and Stage 3 must be complete before lesson generation can begin.");
+    }
+    const curriculum = stage3.curriculum;
+    const context = await plugin.contextService.build();
+    const outputs = buildOutputPaths(curriculum);
+    await ensureFolderTree(plugin, outputs);
+    const lessonOrder = flattenLessons(curriculum);
+    const totalLessons = lessonOrder.length;
+    const existingCache = await plugin.cacheService.readStage(courseId, 4);
+    const startedAt = existingCache?.startedAt ?? (/* @__PURE__ */ new Date()).toISOString();
+    const completedLessonIds = normalizeCompletedLessonIds(existingCache, outputs);
+    const generatedLessonSummaries = existingCache?.generatedLessonSummaries ?? {};
+    const nextLesson = lessonOrder.find((item) => !completedLessonIds.includes(item.lesson.lessonId));
+    if (!nextLesson) {
+      const completeCache = {
+        courseId,
+        progress: {
+          totalLessons,
+          completedLessons: totalLessons
+        },
+        outputs,
+        completedLessonIds,
+        generatedLessonSummaries,
+        status: "complete",
+        startedAt,
+        completedAt: existingCache?.completedAt ?? (/* @__PURE__ */ new Date()).toISOString()
+      };
+      await plugin.cacheService.writeStage(courseId, 4, completeCache);
+      new import_obsidian11.Notice("All lesson notes have already been generated.");
+      return;
+    }
+    await plugin.cacheService.writeStage(courseId, 4, {
+      courseId,
+      progress: {
+        totalLessons,
+        completedLessons: completedLessonIds.length,
+        currentLesson: nextLesson.lesson.title
+      },
+      outputs,
+      completedLessonIds,
+      generatedLessonSummaries,
+      status: "pending",
+      startedAt
+    });
+    new import_obsidian11.Notice(`Generating lesson ${completedLessonIds.length + 1} of ${totalLessons}: ${nextLesson.lesson.title}`);
+    const promptConfig = await plugin.loadPrompt("stage4-lesson");
+    const raw = await plugin.llmService.callJson(
+      promptConfig.template,
+      {
+        topic: stage0.seedTopic,
+        courseTitle: curriculum.title,
+        moduleTitle: nextLesson.module.title,
+        lessonTitle: nextLesson.lesson.title,
+        lessonDescription: nextLesson.lesson.description,
+        prerequisiteSummary: describePrerequisites(nextLesson.lesson, lessonOrder, generatedLessonSummaries),
+        generationMode: context.mode,
+        contextSection: buildContextSection3(context)
+      },
+      promptConfig.model
+    );
+    const validated = await validateAndRepair(
+      raw,
+      Stage4LessonResponseSchema,
+      plugin.llmService,
+      "Return { lesson: { title, summary, difficulty, bodyMarkdown, sourceRefs } } with non-empty Markdown in bodyMarkdown."
+    );
+    const draft = {
+      ...validated.lesson,
+      difficulty: validated.lesson.difficulty,
+      sourceRefs: validated.lesson.sourceRefs ?? []
+    };
+    await writeLessonOutput(
+      plugin,
+      curriculum,
+      outputs,
+      nextLesson.module,
+      nextLesson.lesson,
+      draft,
+      context.mode
+    );
+    const updatedCompletedLessonIds = [...completedLessonIds, nextLesson.lesson.lessonId];
+    const updatedGeneratedLessonSummaries = {
+      ...generatedLessonSummaries,
+      [nextLesson.lesson.lessonId]: {
+        title: draft.title,
+        summary: draft.summary
+      }
+    };
+    await writeSupportingOutputs(plugin, curriculum, outputs);
+    const isComplete = updatedCompletedLessonIds.length === totalLessons;
+    const cache = {
+      courseId,
+      progress: {
+        totalLessons,
+        completedLessons: updatedCompletedLessonIds.length
+      },
+      outputs,
+      completedLessonIds: updatedCompletedLessonIds,
+      generatedLessonSummaries: updatedGeneratedLessonSummaries,
+      status: isComplete ? "complete" : "pending",
+      startedAt,
+      completedAt: isComplete ? (/* @__PURE__ */ new Date()).toISOString() : void 0
+    };
+    await plugin.cacheService.writeStage(courseId, 4, cache);
+    new import_obsidian11.Notice(
+      isComplete ? `Generated all ${totalLessons} lessons in ${outputs.rootDir}.` : `Generated ${draft.title}. ${totalLessons - updatedCompletedLessonIds.length} lesson${totalLessons - updatedCompletedLessonIds.length === 1 ? "" : "s"} remaining.`
+    );
+  } catch (error) {
+    new import_obsidian11.Notice(`Delve: lesson generation failed \u2014 ${error.message}`);
+    throw error;
+  } finally {
+    await plugin.lockService.release();
+  }
+}
+function buildOutputPaths(curriculum) {
+  const courseSlug = slugify(curriculum.title || curriculum.courseId);
+  const rootDir = `${VAULT_PATHS.CURRICULUM}/${courseSlug}`;
+  const courseIndexPath = `${rootDir}/Course Index.md`;
+  const canvasPath = `${rootDir}/${safeFileName(curriculum.title)}.canvas`;
+  const modulePaths = {};
+  const lessonPaths = {};
+  curriculum.modules.forEach((module2, moduleIndex) => {
+    const moduleDir = `${rootDir}/${padNumber(moduleIndex + 1)}-${slugify(module2.title)}`;
+    modulePaths[module2.moduleId] = `${moduleDir}/Module MOC.md`;
+    module2.lessons.forEach((lesson, lessonIndex) => {
+      lessonPaths[lesson.lessonId] = `${moduleDir}/${padNumber(lessonIndex + 1)}-${slugify(lesson.title)}.md`;
+    });
+  });
+  return {
+    rootDir,
+    courseIndexPath,
+    canvasPath,
+    modulePaths,
+    lessonPaths
+  };
+}
+async function ensureFolderTree(plugin, outputs) {
+  const directories = /* @__PURE__ */ new Set([VAULT_PATHS.CURRICULUM, outputs.rootDir]);
+  Object.values(outputs.modulePaths).forEach((path) => directories.add(dirname(path)));
+  Object.values(outputs.lessonPaths).forEach((path) => directories.add(dirname(path)));
+  for (const dir of directories) {
+    await ensureFolder2(plugin, dir);
+  }
+}
+async function ensureFolder2(plugin, path) {
+  if (!path || path === ".")
+    return;
+  const exists = await plugin.app.vault.adapter.exists(path);
+  if (exists)
+    return;
+  await plugin.app.vault.adapter.mkdir?.(path);
+}
+function normalizeCompletedLessonIds(cache, outputs) {
+  const completedLessonIds = cache?.completedLessonIds ?? [];
+  const knownLessonIds = new Set(Object.keys(outputs.lessonPaths));
+  return completedLessonIds.filter((lessonId) => knownLessonIds.has(lessonId));
+}
+async function writeSupportingOutputs(plugin, curriculum, outputs) {
+  const courseIndexLink = wikiLinkFromPath(outputs.courseIndexPath);
+  await writeMarkdownFile(
+    plugin,
+    outputs.courseIndexPath,
+    buildCourseIndex(curriculum, outputs)
+  );
+  for (const module2 of curriculum.modules) {
+    const moduleLessonLinks = module2.lessons.map(
+      (lesson) => wikiLinkFromPath(outputs.lessonPaths[lesson.lessonId])
+    );
+    await writeModuleMoc(
+      plugin,
+      outputs.modulePaths[module2.moduleId],
+      module2,
+      courseIndexLink,
+      moduleLessonLinks
+    );
+  }
+  await writeCanvas(
+    plugin,
+    curriculum,
+    outputs.canvasPath,
+    outputs.lessonPaths,
+    outputs.modulePaths,
+    outputs.courseIndexPath
+  );
+}
+async function writeLessonOutput(plugin, curriculum, outputs, module2, lesson, draft, mode) {
+  const lessonOrder = flattenLessons(curriculum);
+  const flatLessons = lessonOrder.map((item) => item.lesson);
+  const lessonIndex = flatLessons.findIndex((item) => item.lessonId === lesson.lessonId);
+  const previous = lessonIndex > 0 ? flatLessons[lessonIndex - 1] : void 0;
+  const next = lessonIndex < flatLessons.length - 1 ? flatLessons[lessonIndex + 1] : void 0;
+  const navigation = buildNavigationLinks(
+    wikiLinkFromPath(outputs.courseIndexPath),
+    wikiLinkFromPath(outputs.modulePaths[module2.moduleId]),
+    previous ? wikiLinkFromPath(outputs.lessonPaths[previous.lessonId]) : void 0,
+    next ? wikiLinkFromPath(outputs.lessonPaths[next.lessonId]) : void 0
+  );
+  const content = [
+    buildFrontmatter({
+      status: "draft",
+      difficulty: draft.difficulty,
+      lessonId: lesson.lessonId,
+      moduleId: module2.moduleId,
+      generationMode: mode,
+      sourceRefs: draft.sourceRefs,
+      generatedAt: (/* @__PURE__ */ new Date()).toISOString()
+    }),
+    "",
+    `# ${draft.title}`,
+    "",
+    navigation.breadcrumbs,
+    "",
+    `> ${draft.summary}`,
+    "",
+    draft.bodyMarkdown.trim(),
+    "",
+    "---",
+    "",
+    navigation.sequence
+  ].join("\n");
+  await writeMarkdownFile(plugin, outputs.lessonPaths[lesson.lessonId], content);
+}
+function buildCourseIndex(curriculum, outputs) {
+  const lines = [
+    `# ${curriculum.title}`,
+    "",
+    "## Modules",
+    ""
+  ];
+  curriculum.modules.forEach((module2) => {
+    lines.push(`- ${wikiLinkFromPath(outputs.modulePaths[module2.moduleId])}`);
+    module2.lessons.forEach((lesson) => {
+      lines.push(`  - ${wikiLinkFromPath(outputs.lessonPaths[lesson.lessonId])}`);
+    });
+  });
+  lines.push("", `Canvas: ${wikiLinkFromPath(outputs.canvasPath)}`);
+  return lines.join("\n");
+}
+function flattenLessons(curriculum) {
+  return curriculum.modules.flatMap(
+    (module2) => module2.lessons.map((lesson) => ({ module: module2, lesson }))
+  );
+}
+function describePrerequisites(lesson, lessonOrder, generatedLessonSummaries) {
+  if (lesson.prerequisites.length === 0)
+    return "None";
+  return lesson.prerequisites.map((prereqId) => {
+    const prereq = lessonOrder.find((item) => item.lesson.lessonId === prereqId)?.lesson;
+    const generated = generatedLessonSummaries[prereqId];
+    return prereq ? `${prereq.title}: ${generated?.summary ?? prereq.description}` : prereqId;
+  }).join("\n");
+}
+function buildContextSection3(context) {
+  if (context.mode === "knowledge-only" || !context.content) {
+    return "No source material has been provided. Write the lesson using general knowledge only.";
+  }
+  return `The learner has provided ${context.fileCount} source file(s). Prefer this material where it is strong; supplement with general knowledge when needed.
+
+${context.content}`;
+}
+function wikiLinkFromPath(path) {
+  const basename = path.split("/").pop()?.replace(/\.(md|canvas)$/i, "") ?? path;
+  return `[[${basename}]]`;
+}
+function dirname(path) {
+  const parts = path.split("/");
+  parts.pop();
+  return parts.join("/");
+}
+function slugify(value) {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "course";
+}
+function safeFileName(value) {
+  return value.replace(/[\\/:*?"<>|]/g, "").trim() || "Course";
+}
+function padNumber(value) {
+  return String(value).padStart(2, "0");
+}
+
+// src/ui/syllabus-editor-view.ts
+var SyllabusEditorView = class extends import_obsidian12.ItemView {
+  constructor(leaf, plugin) {
+    super(leaf);
+    this.plugin = plugin;
+    __publicField(this, "state", {
+      courseId: "",
+      seedTopic: "",
+      curriculum: {
+        courseId: "",
+        title: "",
+        modules: []
+      },
+      loading: false
+    });
+    __publicField(this, "saving", false);
+    __publicField(this, "dirty", false);
+    __publicField(this, "generatingLessons", false);
+  }
+  getViewType() {
+    return SYLLABUS_VIEW_TYPE;
+  }
+  getDisplayText() {
+    return this.state.seedTopic ? `Curriculum: ${this.state.seedTopic}` : "Delve: Curriculum Draft";
+  }
+  getIcon() {
+    return "map";
+  }
+  async setState(state, _result) {
+    this.state = this.normalizeState(state);
+    this.saving = false;
+    this.dirty = false;
+    this.generatingLessons = false;
+    await this.render();
+  }
+  getState() {
+    return this.state;
+  }
+  async onOpen() {
+    this.state = this.normalizeState(this.state);
+    if (this.getCourseId())
+      await this.render();
+  }
+  async onClose() {
+    this.contentEl.empty();
+  }
+  async render() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.addClass("delve-syllabus");
+    const courseId = this.getCourseId();
+    const stage4 = courseId ? await this.plugin.cacheService.readStage(courseId, 4) : void 0;
+    const lessonCount = countLessons(this.state.curriculum);
+    const completedLessons = stage4?.progress.completedLessons ?? 0;
+    const remainingLessons = Math.max(lessonCount - completedLessons, 0);
+    const generationComplete = stage4?.status === "complete" && lessonCount > 0;
+    const header = contentEl.createDiv("delve-syllabus__header");
+    header.createEl("h2", { text: `Curriculum Draft: ${this.state.seedTopic}` });
+    header.createEl("p", {
+      text: "Review and edit the draft syllabus, then generate lessons one at a time as you are ready to study them.",
+      cls: "delve-syllabus__hint"
+    });
+    const meta = header.createDiv("delve-syllabus__meta");
+    if (this.state.sourceMode) {
+      meta.createEl("span", {
+        text: describeSourceMode(this.state.sourceMode, this.state.fileCount ?? 0),
+        cls: `delve-syllabus__mode delve-syllabus__mode--${this.state.sourceMode}`
+      });
+    }
+    meta.createEl("span", {
+      text: `${this.state.curriculum.modules.length} modules`,
+      cls: "delve-syllabus__count"
+    });
+    meta.createEl("span", {
+      text: `${lessonCount} lessons`,
+      cls: "delve-syllabus__count"
+    });
+    if (lessonCount > 0) {
+      meta.createEl("span", {
+        text: generationComplete ? "All lessons generated" : `${completedLessons}/${lessonCount} generated`,
+        cls: "delve-syllabus__count"
+      });
+    }
+    const body = contentEl.createDiv("delve-syllabus__body");
+    if (this.state.loading) {
+      body.createDiv("delve-syllabus__loading").textContent = "Designing your curriculum draft\u2026";
+      return;
+    }
+    const titleField = body.createDiv("delve-syllabus__field");
+    titleField.createEl("label", {
+      text: "Course title",
+      cls: "delve-syllabus__label"
+    });
+    const courseTitleInput = titleField.createEl("input", {
+      type: "text",
+      cls: "delve-syllabus__input",
+      value: this.state.curriculum.title
+    });
+    courseTitleInput.addEventListener("input", () => {
+      this.state.curriculum.title = courseTitleInput.value;
+      this.markDirty();
+    });
+    const modules = body.createDiv("delve-syllabus__modules");
+    this.state.curriculum.modules.forEach((module2, moduleIndex) => {
+      const moduleCard = modules.createDiv("delve-syllabus__module");
+      const moduleHeader = moduleCard.createDiv("delve-syllabus__module-header");
+      moduleHeader.createEl("span", {
+        text: `Module ${moduleIndex + 1}`,
+        cls: "delve-syllabus__module-index"
+      });
+      this.renderField(
+        moduleCard,
+        "Module title",
+        module2.title,
+        (value) => {
+          this.state.curriculum.modules[moduleIndex].title = value;
+          this.markDirty();
+        }
+      );
+      this.renderTextarea(
+        moduleCard,
+        "Module description",
+        module2.description,
+        (value) => {
+          this.state.curriculum.modules[moduleIndex].description = value;
+          this.markDirty();
+        }
+      );
+      const lessons = moduleCard.createDiv("delve-syllabus__lessons");
+      module2.lessons.forEach((lesson, lessonIndex) => {
+        const lessonCard = lessons.createDiv("delve-syllabus__lesson");
+        lessonCard.createEl("div", {
+          text: `Lesson ${lessonIndex + 1}`,
+          cls: "delve-syllabus__lesson-index"
+        });
+        this.renderField(
+          lessonCard,
+          "Lesson title",
+          lesson.title,
+          (value) => {
+            this.state.curriculum.modules[moduleIndex].lessons[lessonIndex].title = value;
+            this.markDirty();
+          }
+        );
+        this.renderTextarea(
+          lessonCard,
+          "Lesson description",
+          lesson.description,
+          (value) => {
+            this.state.curriculum.modules[moduleIndex].lessons[lessonIndex].description = value;
+            this.markDirty();
+          }
+        );
+        const prereqs = lessonCard.createDiv("delve-syllabus__prereqs");
+        prereqs.createEl("span", {
+          text: lesson.prerequisites.length ? `Prerequisites: ${lesson.prerequisites.join(", ")}` : "Prerequisites: none",
+          cls: "delve-syllabus__prereqs-text"
+        });
+      });
+    });
+    const footer = contentEl.createDiv("delve-syllabus__footer");
+    const status = footer.createDiv("delve-syllabus__status");
+    if (this.saving) {
+      status.textContent = "Saving syllabus draft\u2026";
+    } else if (this.generatingLessons) {
+      status.textContent = remainingLessons > 0 ? `Generating lesson ${completedLessons + 1} of ${lessonCount}\u2026` : "Wrapping up lesson generation\u2026";
+    } else if (this.dirty) {
+      status.textContent = "You have unsaved curriculum edits.";
+    } else if (generationComplete) {
+      status.textContent = "All lessons have been generated into the vault.";
+    } else if (completedLessons > 0) {
+      status.textContent = `${completedLessons} lesson${completedLessons === 1 ? "" : "s"} generated. You can keep going whenever you\u2019re ready.`;
+    } else {
+      status.textContent = "Draft saved locally in plugin data.";
+    }
+    const actions = footer.createDiv("delve-syllabus__actions");
+    const regenerateBtn = actions.createEl("button", {
+      text: "Regenerate draft",
+      cls: "delve-taxonomy__action-btn"
+    });
+    regenerateBtn.disabled = this.saving || this.generatingLessons;
+    regenerateBtn.addEventListener("click", () => void this.handleRegenerate());
+    const saveBtn = actions.createEl("button", {
+      text: this.saving ? "Saving\u2026" : "Save draft",
+      cls: "delve-taxonomy__action-btn delve-syllabus__save"
+    });
+    saveBtn.disabled = this.saving || this.generatingLessons || !this.dirty;
+    saveBtn.addEventListener("click", () => void this.handleSaveDraft());
+    const finalizeBtn = actions.createEl("button", {
+      text: getGenerateButtonLabel(this.generatingLessons, generationComplete, completedLessons),
+      cls: "mod-cta delve-btn-primary delve-syllabus__finalize"
+    });
+    finalizeBtn.disabled = this.saving || this.generatingLessons || Boolean(this.state.loading) || generationComplete;
+    finalizeBtn.addEventListener("click", () => void this.handleGenerateLessons());
+  }
+  renderField(parent, label, value, onInput) {
+    const field = parent.createDiv("delve-syllabus__field");
+    field.createEl("label", { text: label, cls: "delve-syllabus__label" });
+    const input = field.createEl("input", {
+      type: "text",
+      cls: "delve-syllabus__input",
+      value
+    });
+    input.addEventListener("input", () => onInput(input.value));
+  }
+  renderTextarea(parent, label, value, onInput) {
+    const field = parent.createDiv("delve-syllabus__field");
+    field.createEl("label", { text: label, cls: "delve-syllabus__label" });
+    const textarea = field.createEl("textarea", { cls: "delve-syllabus__textarea" });
+    textarea.rows = 3;
+    textarea.value = value;
+    textarea.addEventListener("input", () => onInput(textarea.value));
+  }
+  async handleSaveDraft() {
+    const courseId = await this.ensureCourseId();
+    if (!courseId) {
+      new import_obsidian12.Notice("This curriculum tab is missing its course id. Reopen it from the assessment view.");
+      return;
+    }
+    this.saving = true;
+    await this.render();
+    try {
+      await this.writeCurrentStage3(courseId);
+      this.dirty = false;
+      new import_obsidian12.Notice("Curriculum draft saved.");
+    } finally {
+      this.saving = false;
+      await this.render();
+    }
+  }
+  async handleRegenerate() {
+    const courseId = this.getCourseId();
+    if (!courseId) {
+      new import_obsidian12.Notice("This curriculum tab is missing its course id. Reopen it from the assessment view.");
+      return;
+    }
+    try {
+      await runStage3(this.plugin, courseId);
+    } catch (e) {
+      new import_obsidian12.Notice(`Could not regenerate curriculum: ${e.message}`);
+    }
+  }
+  async handleGenerateLessons() {
+    const courseId = await this.ensureCourseId();
+    if (!courseId) {
+      new import_obsidian12.Notice("This curriculum tab is missing its course id. Reopen it from the assessment view.");
+      return;
+    }
+    if (this.generatingLessons)
+      return;
+    this.generatingLessons = true;
+    await this.render();
+    try {
+      await this.writeCurrentStage3(courseId);
+      await this.ensureStage0SeedTopic(courseId);
+      this.dirty = false;
+      await runStage4(this.plugin, courseId);
+    } catch (e) {
+      new import_obsidian12.Notice(`Could not generate lessons: ${e.message}`);
+    } finally {
+      this.generatingLessons = false;
+      await this.render();
+    }
+  }
+  markDirty() {
+    this.dirty = true;
+    const status = this.contentEl.querySelector(".delve-syllabus__status");
+    if (status && !this.saving) {
+      status.textContent = "You have unsaved curriculum edits.";
+    }
+    const saveBtn = this.contentEl.querySelector(".delve-syllabus__save");
+    if (saveBtn)
+      saveBtn.disabled = false;
+  }
+  getCourseId() {
+    return this.state.courseId || this.state.curriculum.courseId || "";
+  }
+  async ensureCourseId() {
+    const existingCourseId = this.getCourseId();
+    if (existingCourseId) {
+      this.state.courseId = existingCourseId;
+      this.state.curriculum.courseId = existingCourseId;
+      return existingCourseId;
+    }
+    const recoveredCourseId = generateRecoveredCourseId(this.state.seedTopic);
+    this.state.courseId = recoveredCourseId;
+    this.state.curriculum.courseId = recoveredCourseId;
+    return recoveredCourseId;
+  }
+  async writeCurrentStage3(courseId) {
+    const cache = {
+      courseId,
+      curriculum: {
+        ...this.state.curriculum,
+        courseId
+      },
+      status: "complete",
+      completedAt: (/* @__PURE__ */ new Date()).toISOString()
+    };
+    await this.plugin.cacheService.writeStage(courseId, 3, cache);
+  }
+  async ensureStage0SeedTopic(courseId) {
+    const existingStage0 = await this.plugin.cacheService.readStage(courseId, 0);
+    if (existingStage0)
+      return;
+    const seedTopic = this.state.seedTopic.trim();
+    if (!seedTopic)
+      return;
+    const cache = {
+      courseId,
+      seedTopic,
+      taxonomy: [],
+      selectedScope: [],
+      scopeSummary: seedTopic,
+      status: "complete",
+      completedAt: (/* @__PURE__ */ new Date()).toISOString()
+    };
+    await this.plugin.cacheService.writeStage(courseId, 0, cache);
+  }
+  normalizeState(state) {
+    const courseId = state.courseId || state.curriculum?.courseId || "";
+    return {
+      ...state,
+      courseId,
+      curriculum: {
+        ...state.curriculum,
+        courseId
+      }
+    };
+  }
+};
+function countLessons(curriculum) {
+  return curriculum.modules.reduce((total, module2) => total + module2.lessons.length, 0);
+}
+function describeSourceMode(mode, fileCount) {
+  if (mode === "knowledge-only")
+    return "Knowledge-only";
+  const label = mode === "grounded" ? "Grounded" : "Augmented";
+  return `${label} \u2014 ${fileCount} source file${fileCount === 1 ? "" : "s"}`;
+}
+function getGenerateButtonLabel(generatingLessons, generationComplete, completedLessons) {
+  if (generatingLessons)
+    return "Generating next lesson\u2026";
+  if (generationComplete)
+    return "All lessons generated";
+  if (completedLessons > 0)
+    return "Generate next lesson";
+  return "Generate first lesson";
+}
+function generateRecoveredCourseId(seedTopic) {
+  const topicSlug = seedTopic.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "course";
+  return `recovered-${topicSlug}-${Date.now().toString(36)}`;
+}
+
+// src/ui/resume-modal.ts
+var import_obsidian13 = require("obsidian");
+var STAGE_NAMES = {
+  0: "Topic Explorer",
+  1: "Concept Extraction",
+  2: "Diagnostic",
+  3: "Curriculum Design",
+  4: "Content Generation"
+};
+var ResumeModal = class extends import_obsidian13.Modal {
+  constructor(app, lock) {
+    super(app);
+    this.lock = lock;
+    __publicField(this, "resolve");
+  }
+  waitForChoice() {
+    return new Promise((resolve) => {
+      this.resolve = resolve;
+      this.open();
+    });
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.createEl("h2", { text: "Resume previous session?" });
+    contentEl.createEl("p", {
+      text: `A session was interrupted at Stage ${this.lock.stage} \u2014 ${STAGE_NAMES[this.lock.stage] ?? "Unknown"}.`
+    });
+    contentEl.createEl("p", {
+      text: `Course: ${this.lock.courseId}`,
+      cls: "setting-item-description"
+    });
+    new import_obsidian13.Setting(contentEl).addButton(
+      (btn) => btn.setButtonText("Resume").setCta().onClick(() => {
+        this.close();
+        this.resolve("resume");
+      })
+    ).addButton(
+      (btn) => btn.setButtonText("Start over").onClick(() => {
+        this.close();
+        this.resolve("restart");
+      })
+    );
+  }
+  onClose() {
+    this.contentEl.empty();
+    this.resolve?.("restart");
+  }
+};
+
+// src/plugin.ts
+var DelvePlugin = class extends import_obsidian14.Plugin {
+  constructor() {
+    super(...arguments);
+    __publicField(this, "settings");
+    __publicField(this, "llmService");
+    __publicField(this, "cacheService");
+    __publicField(this, "lockService");
+    __publicField(this, "contextService");
+  }
+  async onload() {
+    try {
+      await this.loadSettings();
+      this.initServices();
+      await ensurePromptSettings(this);
+      this.registerViews();
+      this.registerCommands();
+      this.addSettingTab(new DelveSettingsTab(this.app, this));
+      await this.checkResume();
+    } catch (e) {
+      await this.handleLoadError(e);
+    }
+  }
+  async onunload() {
+  }
+  async loadSettings() {
+    const raw = await this.loadData();
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, raw?.settings ?? {});
+  }
+  async saveSettings() {
+    const raw = await this.loadData() ?? {};
+    raw.settings = this.settings;
+    await this.saveData(raw);
+    const runtimeConfig = await loadRuntimeConfig(this);
+    this.llmService.updateConfig(this.settings.openRouterApiKey, runtimeConfig.defaultModel);
+  }
+  async loadPrompt(name) {
+    return loadPrompt(this, name);
+  }
+  initServices() {
+    this.llmService = new OpenRouterService(
+      this.settings.openRouterApiKey,
+      this.settings.defaultModel
+    );
+    this.cacheService = new CacheService(this);
+    this.lockService = new LockService(this.app.vault);
+    this.contextService = new ContextService(this.app.vault);
+  }
+  registerViews() {
+    this.registerView(TAXONOMY_VIEW_TYPE, (leaf) => new TaxonomyView(leaf, this));
+    this.registerView(CONCEPTS_VIEW_TYPE, (leaf) => new ConceptsView(leaf, this));
+    this.registerView(DIAGNOSTIC_VIEW_TYPE, (leaf) => new DiagnosticView(leaf, this));
+    this.registerView(SYLLABUS_VIEW_TYPE, (leaf) => new SyllabusEditorView(leaf, this));
+  }
+  registerCommands() {
+    this.addCommand({
+      id: "start-course",
+      name: "Start new course",
+      callback: () => new TopicInputModal(this.app, this).open()
+    });
+  }
+  async checkResume() {
+    try {
+      const lock = await this.lockService.read();
+      if (!lock)
+        return;
+      const modal = new ResumeModal(this.app, lock);
+      const choice = await modal.waitForChoice();
+      if (choice === "resume") {
+        await this.resumeStage(lock.courseId, lock.stage);
+      } else {
+        await this.lockService.release();
+      }
+    } catch (e) {
+      console.warn("Delve: resume check failed", e);
+    }
+  }
+  async resumeStage(courseId, stage) {
+    if (stage === 0) {
+      const cached = await this.cacheService.readStage(courseId, 0);
+      if (!cached)
+        return;
+      if (cached.taxonomy?.length) {
+        const leaf = this.app.workspace.getLeaf(false);
+        await leaf.setViewState({
+          type: TAXONOMY_VIEW_TYPE,
+          active: true,
+          state: { courseId, seedTopic: cached.seedTopic, taxonomy: cached.taxonomy }
+        });
+        this.app.workspace.revealLeaf(leaf);
+      } else if (cached.seedTopic) {
+        await runStage0(this, cached.seedTopic, courseId);
+      }
+    } else if (stage === 1) {
+      const cached = await this.cacheService.readStage(courseId, 1);
+      const stage0 = await this.cacheService.readStage(courseId, 0);
+      if (cached?.concepts?.length && stage0) {
+        const context = await this.contextService.build();
+        const leaf = this.app.workspace.getLeaf(false);
+        await leaf.setViewState({
+          type: CONCEPTS_VIEW_TYPE,
+          active: true,
+          state: {
+            courseId,
+            seedTopic: stage0.seedTopic,
+            concepts: cached.concepts,
+            sourceMode: context.mode,
+            fileCount: context.fileCount
+          }
+        });
+        this.app.workspace.revealLeaf(leaf);
+        await this.lockService.release();
+      } else if (stage0?.status === "complete") {
+        await runStage1(this, courseId);
+      }
+    } else if (stage === 2) {
+      const stage1 = await this.cacheService.readStage(courseId, 1);
+      const stage0 = await this.cacheService.readStage(courseId, 0);
+      const stage2 = await this.cacheService.readStage(courseId, 2);
+      if (stage1?.concepts?.length && stage0) {
+        const leaf = this.app.workspace.getLeaf(false);
+        await leaf.setViewState({
+          type: DIAGNOSTIC_VIEW_TYPE,
+          active: true,
+          state: {
+            courseId,
+            seedTopic: stage0.seedTopic,
+            concepts: stage1.concepts,
+            savedProficiencyMap: stage2?.proficiencyMap
+          }
+        });
+        this.app.workspace.revealLeaf(leaf);
+      }
+    } else if (stage === 3) {
+      await resumeStage3(this, courseId);
+    } else if (stage === 4) {
+      await runStage4(this, courseId);
+    }
+  }
+  async handleLoadError(error) {
+    console.error("Delve: failed to load", error);
+    new import_obsidian14.Notice(`Delve failed to load: ${error.message}`);
+    try {
+      await this.app.vault.adapter.write(
+        "delve-load-error.md",
+        `# Delve failed to load
+
+${error.message}
+
+\`\`\`
+${error.stack}
+\`\`\``
+      );
+    } catch {
+    }
+  }
+};

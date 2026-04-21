@@ -2,14 +2,14 @@ name: Build and Release
 
 on:
   push:
-    branches:
-      - 'claude/init-delve-plugin-4pOR2'
+    tags:
+      - '*'
   workflow_dispatch:
     inputs:
       version:
         description: 'Release version (e.g. 0.1.0)'
         required: true
-        default: '0.1.0'
+        default: '0.1.1'
 
 jobs:
   release:
@@ -20,8 +20,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          ref: claude/init-delve-plugin-4pOR2
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -44,13 +42,27 @@ jobs:
           fi
           echo "Build: $(wc -c < plugin/main.js) bytes"
 
+      - name: Stage release assets
+        run: |
+          cp plugin/main.js main.js
+          cp plugin/manifest.json manifest.json
+
+      - name: Compute release version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "value=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: '0.1.0'
-          name: 'Delve 0.1.0'
+          tag_name: ${{ steps.version.outputs.value }}
+          name: Delve ${{ steps.version.outputs.value }}
           body: |
-            ## Delve 0.1.0
+            ## Delve ${{ steps.version.outputs.value }}
 
             ### Install via BRAT
             1. Install [BRAT](https://github.com/TfTHacker/obsidian42-brat) from Community Plugins
@@ -59,11 +71,12 @@ jobs:
             4. Add your OpenRouter API key in **Settings → Delve**
 
             ### What’s in this release
-            - Stage 0: Topic Explorer — fully implemented
-            - Scope tree manipulation: Split, Expand, Suggest Related
-            - Stages 1–4: Scaffolded, in progress
+            - Fixed the Stage 0 → Stage 1 Confirm Scope handoff
+            - Added clearer missing-API-key guidance in the Scope view
+            - Switched the default model to `google/gemini-3-flash-preview`
+            - Updated packaged assets for BRAT/mobile installs
           files: |
-            plugin/main.js
+            main.js
             manifest.json
             styles.css
           draft: false

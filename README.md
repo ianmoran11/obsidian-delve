@@ -2,8 +2,6 @@
 
 An Obsidian plugin that turns a dedicated vault into a personalised, AI-assisted learning environment.
 
-See the [`claude/init-delve-plugin-4pOR2`](../../tree/claude/init-delve-plugin-4pOR2) branch for the full source.
-
 ## Install via BRAT
 
 1. Install [BRAT](https://github.com/TfTHacker/obsidian42-brat) from Community Plugins
