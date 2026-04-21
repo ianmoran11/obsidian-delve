@@ -22,7 +22,7 @@ export class OpenRouterService implements LlmService {
     variables: Record<string, string>,
     model?: string
   ): Promise<T> {
-    const rendered = renderPrompt(prompt, variables);
+    const rendered = renderPromptTemplate(prompt, variables);
     const text = await this.callWithRetry(rendered, 'json_object', model);
     return parseJsonResponse<T>(text);
   }
@@ -32,7 +32,7 @@ export class OpenRouterService implements LlmService {
     variables: Record<string, string>,
     model?: string
   ): Promise<string> {
-    const rendered = renderPrompt(prompt, variables);
+    const rendered = renderPromptTemplate(prompt, variables);
     return this.callWithRetry(rendered, 'text', model);
   }
 
@@ -112,7 +112,7 @@ export class OpenRouterService implements LlmService {
   }
 }
 
-function renderPrompt(template: string, vars: Record<string, string>): string {
+export function renderPromptTemplate(template: string, vars: Record<string, string>): string {
   return template.replace(/\{\{(\w+)\}\}/g, (_, k: string) => vars[k] ?? `{{${k}}}`);
 }
 

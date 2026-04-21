@@ -94,6 +94,9 @@ describe('stage4: runStage4', () => {
     expect(fileWrites.find(call => call.path.endsWith('01-functors.md'))?.content).toContain(
       'Previous: none | Next: [[02-limits]]'
     );
+    expect(fileWrites.find(call => call.path.endsWith('01-functors.md'))?.content).toContain(
+      '[!note]- Generation Prompt'
+    );
     expect(stageWrites.at(-1)).toMatchObject({
       courseId: 'course-1',
       status: 'pending',
@@ -283,6 +286,81 @@ describe('stage4: runStage4', () => {
 
     expect(fileWrites.find(call => call.path.endsWith('01-functors.md'))?.content).toContain(
       'difficulty: intro'
+    );
+  });
+
+  it('repairs off-topic JSON-schema lessons back to the requested lesson topic', async () => {
+    const fileWrites: Array<{ path: string; content: string }> = [];
+
+    plugin.cacheService.readStage = vi.fn(async (_courseId: string, stage: number) => {
+      if (stage === 0) {
+        return makeStage0Cache({
+          courseId: 'course-1',
+          seedTopic: 'Category theory',
+          scopeSummary: 'Functors',
+        });
+      }
+      if (stage === 3) {
+        return {
+          courseId: 'course-1',
+          status: 'complete',
+          curriculum: {
+            courseId: 'course-1',
+            title: 'Category Theory Foundations',
+            modules: [
+              {
+                moduleId: 'module-foundations',
+                title: 'Foundations',
+                description: 'Core ideas.',
+                lessons: [
+                  {
+                    lessonId: 'functors',
+                    title: 'Functors',
+                    description: 'Learn how structure-preserving maps work.',
+                    prerequisites: [],
+                  },
+                ],
+              },
+            ],
+          },
+        };
+      }
+      return undefined;
+    }) as never;
+    plugin.app.vault.adapter.write = vi.fn(async (path: string, content: string) => {
+      fileWrites.push({ path, content });
+    });
+    plugin.app.vault.adapter.mkdir = vi.fn();
+    plugin.app.vault.adapter.exists = vi.fn(async () => false);
+    plugin.llmService.callJson = vi
+      .fn()
+      .mockResolvedValueOnce({
+        lesson: {
+          title: 'Understanding JSON Schema Validation',
+          summary: 'A guide to JSON validation.',
+          difficulty: 'intro',
+          bodyMarkdown: '## JSON Schema Debugging\n\nExpected object, received array.',
+          sourceRefs: ['https://json-schema.org/understanding-json-schema/'],
+        },
+      })
+      .mockResolvedValueOnce({
+        lesson: {
+          title: 'Functors',
+          summary: 'A lesson on functors.',
+          difficulty: 'intro',
+          bodyMarkdown: '## Overview\n\nFunctors map objects and morphisms while preserving composition.',
+          sourceRefs: [],
+        },
+      }) as never;
+
+    await runStage4(plugin as never, 'course-1');
+
+    expect(plugin.llmService.callJson).toHaveBeenCalledTimes(2);
+    expect(fileWrites.find(call => call.path.endsWith('01-functors.md'))?.content).toContain(
+      '# Functors'
+    );
+    expect(fileWrites.find(call => call.path.endsWith('01-functors.md'))?.content).not.toContain(
+      'Understanding JSON Schema Validation'
     );
   });
 });

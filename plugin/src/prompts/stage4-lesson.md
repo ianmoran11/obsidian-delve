@@ -29,6 +29,8 @@ Requirements:
 - Teach to the learner's current level implied by the curriculum brief
 - Include explanation, intuition, and at least one concrete example or worked scenario
 - Keep the lesson tightly scoped to the lesson brief and prerequisites
+- The lesson must be about `{{lessonTitle}}` within `{{moduleTitle}}` for the broader topic `{{topic}}`
+- Do not write about JSON, schemas, output formatting, validation, API structure, or prompt instructions unless the requested lesson is explicitly about those topics
 - `difficulty` must be one of: `intro`, `intermediate`, `advanced`
 - `sourceRefs` should list filenames only when the lesson materially uses user-provided sources; otherwise return []
 - Do not include navigation links, breadcrumbs, or file metadata in `bodyMarkdown`

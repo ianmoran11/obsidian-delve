@@ -10,8 +10,9 @@ import type {
   Stage4OutputPaths,
 } from '../interfaces';
 import type { ContextPayload, SourceMode } from '../services/context';
+import { renderPromptTemplate } from '../services/openrouter';
 import { VAULT_PATHS } from '../constants';
-import { Stage4LessonResponseSchema, validateAndRepair } from '../services/validator';
+import { Stage4LessonResponseSchema } from '../services/validator';
 import { writeCanvas } from '../writers/canvas';
 import { buildFrontmatter } from '../writers/frontmatter';
 import { writeMarkdownFile } from '../writers/markdown';
@@ -80,26 +81,31 @@ export async function runStage4(
     new Notice(`Generating lesson ${completedLessonIds.length + 1} of ${totalLessons}: ${nextLesson.lesson.title}`);
 
     const promptConfig = await plugin.loadPrompt('stage4-lesson');
+    const promptVariables = {
+      topic: stage0.seedTopic,
+      courseTitle: curriculum.title,
+      moduleTitle: nextLesson.module.title,
+      lessonTitle: nextLesson.lesson.title,
+      lessonDescription: nextLesson.lesson.description,
+      prerequisiteSummary: describePrerequisites(nextLesson.lesson, lessonOrder, generatedLessonSummaries),
+      generationMode: context.mode,
+      contextSection: buildContextSection(context),
+    };
+    const renderedPrompt = renderPromptTemplate(promptConfig.template, promptVariables);
     const raw = await plugin.llmService.callJson<{ lesson: LessonDraft }>(
       promptConfig.template,
-      {
-        topic: stage0.seedTopic,
-        courseTitle: curriculum.title,
-        moduleTitle: nextLesson.module.title,
-        lessonTitle: nextLesson.lesson.title,
-        lessonDescription: nextLesson.lesson.description,
-        prerequisiteSummary: describePrerequisites(nextLesson.lesson, lessonOrder, generatedLessonSummaries),
-        generationMode: context.mode,
-        contextSection: buildContextSection(context),
-      },
+      promptVariables,
       promptConfig.model
     );
 
-    const validated = await validateAndRepair(
+    const validated = await validateLessonDraft(
+      plugin,
       raw,
-      Stage4LessonResponseSchema,
-      plugin.llmService,
-      'Return { lesson: { title, summary, difficulty, bodyMarkdown, sourceRefs } } with non-empty Markdown in bodyMarkdown.'
+      promptConfig.model,
+      renderedPrompt,
+      stage0.seedTopic,
+      nextLesson.module.title,
+      nextLesson.lesson
     );
     const draft: LessonDraft = {
       ...validated.lesson,
@@ -114,7 +120,8 @@ export async function runStage4(
       nextLesson.module,
       nextLesson.lesson,
       draft,
-      context.mode
+      context.mode,
+      renderedPrompt
     );
 
     const updatedCompletedLessonIds = [...completedLessonIds, nextLesson.lesson.lessonId];
@@ -255,7 +262,8 @@ async function writeLessonOutput(
   module: ModuleSpec,
   lesson: LessonSpec,
   draft: LessonDraft,
-  mode: SourceMode
+  mode: SourceMode,
+  renderedPrompt: string
 ): Promise<void> {
   const lessonOrder = flattenLessons(curriculum);
   const flatLessons = lessonOrder.map(item => item.lesson);
@@ -288,12 +296,131 @@ async function writeLessonOutput(
     '',
     draft.bodyMarkdown.trim(),
     '',
+    buildPromptCallout(renderedPrompt),
+    '',
     '---',
     '',
     navigation.sequence,
   ].join('\n');
 
   await writeMarkdownFile(plugin, outputs.lessonPaths[lesson.lessonId], content);
+}
+
+async function validateLessonDraft(
+  plugin: DelvePlugin,
+  raw: unknown,
+  model: string,
+  renderedPrompt: string,
+  topic: string,
+  moduleTitle: string,
+  lesson: LessonSpec
+): Promise<{ lesson: LessonDraft }> {
+  const initial = Stage4LessonResponseSchema.safeParse(raw);
+  if (initial.success && !looksOffTopic(initial.data.lesson, topic, moduleTitle, lesson)) {
+    return initial.data;
+  }
+
+  const issues = initial.success
+    ? ['lesson drifted away from the requested topic and focused on output-format or JSON/schema details']
+    : initial.error.issues.map(issue => `${issue.path.join('.')}: ${issue.message}`);
+
+  const repaired = await plugin.llmService.callJson<{ lesson: LessonDraft }>(
+    buildLessonRepairPrompt(renderedPrompt, topic, moduleTitle, lesson, raw, issues),
+    {},
+    model
+  );
+
+  const repairedResult = Stage4LessonResponseSchema.parse(repaired);
+  if (looksOffTopic(repairedResult.lesson, topic, moduleTitle, lesson)) {
+    throw new Error(`Generated lesson drifted off-topic for "${lesson.title}".`);
+  }
+
+  return repairedResult;
+}
+
+function buildLessonRepairPrompt(
+  renderedPrompt: string,
+  topic: string,
+  moduleTitle: string,
+  lesson: LessonSpec,
+  raw: unknown,
+  issues: string[]
+): string {
+  return [
+    'You are repairing a lesson-generation response for an Obsidian course builder.',
+    '',
+    `The lesson MUST remain about "${lesson.title}" in module "${moduleTitle}" for topic "${topic}".`,
+    `Lesson brief: ${lesson.description}`,
+    '',
+    'Do not write about JSON, schemas, validation, output formatting, API payloads, or prompt instructions unless the requested lesson is explicitly about those topics.',
+    'Preserve the intended teaching task and rewrite the response as valid JSON only.',
+    '',
+    'Original lesson-generation prompt:',
+    renderedPrompt,
+    '',
+    'Problem with the previous response:',
+    ...issues.map(issue => `- ${issue}`),
+    '',
+    'Previous response:',
+    JSON.stringify(raw, null, 2),
+    '',
+    'Return exactly:',
+    '{',
+    '  "lesson": {',
+    '    "title": "Lesson title aligned with the requested lesson",',
+    '    "summary": "1-2 sentence summary of the requested lesson",',
+    '    "difficulty": "intro | intermediate | advanced",',
+    '    "bodyMarkdown": "# Markdown lesson body",',
+    '    "sourceRefs": []',
+    '  }',
+    '}',
+  ].join('\n');
+}
+
+function looksOffTopic(
+  draft: LessonDraft,
+  topic: string,
+  moduleTitle: string,
+  lesson: LessonSpec
+): boolean {
+  const requestedText = `${topic} ${moduleTitle} ${lesson.title} ${lesson.description}`.toLowerCase();
+  const generatedText = `${draft.title} ${draft.summary} ${draft.bodyMarkdown}`.toLowerCase();
+  const generatedRefs = draft.sourceRefs.map(ref => ref.toLowerCase()).join(' ');
+
+  const metaSignals = [
+    'json schema',
+    'schema validation',
+    'validation error',
+    'expected object',
+    'received array',
+    'bodymarkdown',
+    'sourcerefs',
+    'return a json object',
+    'yaml frontmatter',
+  ];
+
+  const requestedIsJsonLesson = /\bjson\b|\bschema\b/.test(requestedText);
+  if (requestedIsJsonLesson) return false;
+
+  const signalCount = metaSignals.reduce((count, signal) => {
+    return count + (generatedText.includes(signal) ? 1 : 0) + (generatedRefs.includes(signal) ? 1 : 0);
+  }, 0);
+
+  if (signalCount >= 1) return true;
+  if (/\bjson\b/.test(generatedText) || /\bjson\b/.test(generatedRefs)) return true;
+
+  return false;
+}
+
+function buildPromptCallout(renderedPrompt: string): string {
+  const lines = renderedPrompt.trim().split('\n');
+  const quotedPrompt = [
+    '> [!note]- Generation Prompt',
+    '> ```text',
+    ...lines.map(line => `> ${line}`),
+    '> ```',
+  ];
+  return quotedPrompt.join('\n');
 }
 
 function buildCourseIndex(curriculum: Curriculum, outputs: Stage4OutputPaths): string {
