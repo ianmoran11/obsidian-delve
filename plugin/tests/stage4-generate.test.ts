@@ -97,6 +97,12 @@ describe('stage4: runStage4', () => {
     expect(fileWrites.find(call => call.path.endsWith('01-functors.md'))?.content).toContain(
       '[!note]- Generation Prompt'
     );
+    expect(fileWrites.find(call => call.path.endsWith('01-functors.md'))?.content).toContain(
+      'Model: `anthropic/claude-3-5-sonnet`'
+    );
+    expect(fileWrites.find(call => call.path.endsWith('01-functors.md'))?.content).toContain(
+      'Repair pass used: no'
+    );
     expect(stageWrites.at(-1)).toMatchObject({
       courseId: 'course-1',
       status: 'pending',
@@ -224,6 +230,126 @@ describe('stage4: runStage4', () => {
       completedLessonIds: ['functors', 'limits'],
       progress: {
         totalLessons: 2,
+        completedLessons: 2,
+      },
+    });
+  });
+
+  it('generates only the selected lessons in curriculum order', async () => {
+    const stageWrites: Stage4Cache[] = [];
+    const fileWrites: Array<{ path: string; content: string }> = [];
+
+    plugin.cacheService.readStage = vi.fn(async (_courseId: string, stage: number) => {
+      if (stage === 0) {
+        return makeStage0Cache({
+          courseId: 'course-1',
+          seedTopic: 'Category theory',
+          scopeSummary: 'Functors, natural transformations, and limits',
+        });
+      }
+      if (stage === 3) {
+        return {
+          courseId: 'course-1',
+          status: 'complete',
+          curriculum: {
+            courseId: 'course-1',
+            title: 'Category Theory Foundations',
+            modules: [
+              {
+                moduleId: 'module-foundations',
+                title: 'Foundations',
+                description: 'Core ideas.',
+                lessons: [
+                  {
+                    lessonId: 'functors',
+                    title: 'Functors',
+                    description: 'Learn how structure-preserving maps work.',
+                    prerequisites: [],
+                  },
+                  {
+                    lessonId: 'natural-transformations',
+                    title: 'Natural transformations',
+                    description: 'Understand morphisms between functors.',
+                    prerequisites: ['functors'],
+                  },
+                  {
+                    lessonId: 'limits',
+                    title: 'Limits',
+                    description: 'Understand categorical limits.',
+                    prerequisites: ['functors'],
+                  },
+                ],
+              },
+            ],
+          },
+        };
+      }
+      if (stage === 4) {
+        return stageWrites.at(-1);
+      }
+      return undefined;
+    }) as never;
+    plugin.cacheService.writeStage = vi.fn(async (_courseId: string, stage: number, cache: Stage4Cache) => {
+      if (stage === 4) stageWrites.push(cache);
+    }) as never;
+    plugin.app.vault.adapter.write = vi.fn(async (path: string, content: string) => {
+      fileWrites.push({ path, content });
+    });
+    plugin.app.vault.adapter.mkdir = vi.fn();
+    plugin.app.vault.adapter.exists = vi.fn(async () => false);
+    plugin.llmService.callJson = vi
+      .fn()
+      .mockResolvedValueOnce({
+        lesson: {
+          title: 'Functors',
+          summary: 'A lesson on functors.',
+          difficulty: 'intro',
+          bodyMarkdown: '## Overview\n\nFunctors map objects and morphisms.',
+          sourceRefs: [],
+        },
+      })
+      .mockResolvedValueOnce({
+        lesson: {
+          title: 'Limits',
+          summary: 'A lesson on limits.',
+          difficulty: 'intermediate',
+          bodyMarkdown: '## Overview\n\nLimits capture universal cones.',
+          sourceRefs: [],
+        },
+      }) as never;
+
+    await runStage4(plugin as never, 'course-1', {
+      lessonIds: ['limits', 'functors'],
+    });
+
+    expect(plugin.llmService.callJson).toHaveBeenCalledTimes(2);
+    expect(plugin.llmService.callJson).toHaveBeenNthCalledWith(
+      1,
+      expect.any(String),
+      expect.objectContaining({ lessonTitle: 'Functors' }),
+      'anthropic/claude-3-5-sonnet'
+    );
+    expect(plugin.llmService.callJson).toHaveBeenNthCalledWith(
+      2,
+      expect.any(String),
+      expect.objectContaining({ lessonTitle: 'Limits' }),
+      'anthropic/claude-3-5-sonnet'
+    );
+    expect(fileWrites.map(call => call.path)).toContain(
+      '4-Curriculum/category-theory-foundations/01-foundations/01-functors.md'
+    );
+    expect(fileWrites.map(call => call.path)).toContain(
+      '4-Curriculum/category-theory-foundations/01-foundations/03-limits.md'
+    );
+    expect(fileWrites.map(call => call.path)).not.toContain(
+      '4-Curriculum/category-theory-foundations/01-foundations/02-natural-transformations.md'
+    );
+    expect(stageWrites.at(-1)).toMatchObject({
+      courseId: 'course-1',
+      status: 'pending',
+      completedLessonIds: ['functors', 'limits'],
+      progress: {
+        totalLessons: 3,
         completedLessons: 2,
       },
     });
@@ -361,6 +487,9 @@ describe('stage4: runStage4', () => {
     );
     expect(fileWrites.find(call => call.path.endsWith('01-functors.md'))?.content).not.toContain(
       'Understanding JSON Schema Validation'
+    );
+    expect(fileWrites.find(call => call.path.endsWith('01-functors.md'))?.content).toContain(
+      'Repair pass used: yes'
     );
   });
 });
