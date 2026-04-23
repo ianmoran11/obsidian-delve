@@ -6106,7 +6106,7 @@ function buildNavigationLinks(courseIndexLink, moduleLink, previousLessonLink, n
 }
 
 // src/stages/stage4-generate.ts
-async function runStage4(plugin, courseId) {
+async function runStage4(plugin, courseId, options = {}) {
   await plugin.lockService.acquire(courseId, 4);
   try {
     const stage0 = await plugin.cacheService.readStage(courseId, 0);
@@ -6124,8 +6124,9 @@ async function runStage4(plugin, courseId) {
     const startedAt = existingCache?.startedAt ?? (/* @__PURE__ */ new Date()).toISOString();
     const completedLessonIds = normalizeCompletedLessonIds(existingCache, outputs);
     const generatedLessonSummaries = existingCache?.generatedLessonSummaries ?? {};
-    const nextLesson = lessonOrder.find((item) => !completedLessonIds.includes(item.lesson.lessonId));
-    if (!nextLesson) {
+    const selectedLessonIds = normalizeSelectedLessonIds(options.lessonIds, lessonOrder);
+    const remainingLessons = lessonOrder.filter((item) => !completedLessonIds.includes(item.lesson.lessonId));
+    if (remainingLessons.length === 0) {
       const completeCache = {
         courseId,
         progress: {
@@ -6143,12 +6144,17 @@ async function runStage4(plugin, courseId) {
       new import_obsidian11.Notice("All lesson notes have already been generated.");
       return;
     }
+    const lessonsToGenerate = selectedLessonIds.length > 0 ? remainingLessons.filter((item) => selectedLessonIds.includes(item.lesson.lessonId)) : remainingLessons.slice(0, 1);
+    if (lessonsToGenerate.length === 0) {
+      new import_obsidian11.Notice("None of the selected lessons still need to be generated.");
+      return;
+    }
     await plugin.cacheService.writeStage(courseId, 4, {
       courseId,
       progress: {
         totalLessons,
         completedLessons: completedLessonIds.length,
-        currentLesson: nextLesson.lesson.title
+        currentLesson: lessonsToGenerate[0].lesson.title
       },
       outputs,
       completedLessonIds,
@@ -6156,56 +6162,99 @@ async function runStage4(plugin, courseId) {
       status: "pending",
       startedAt
     });
-    new import_obsidian11.Notice(`Generating lesson ${completedLessonIds.length + 1} of ${totalLessons}: ${nextLesson.lesson.title}`);
     const promptConfig = await plugin.loadPrompt("stage4-lesson");
-    const promptVariables = {
-      topic: stage0.seedTopic,
-      courseTitle: curriculum.title,
-      moduleTitle: nextLesson.module.title,
-      lessonTitle: nextLesson.lesson.title,
-      lessonDescription: nextLesson.lesson.description,
-      prerequisiteSummary: describePrerequisites(nextLesson.lesson, lessonOrder, generatedLessonSummaries),
-      generationMode: context.mode,
-      contextSection: buildContextSection3(context)
-    };
-    const renderedPrompt = renderPromptTemplate(promptConfig.template, promptVariables);
-    const raw = await plugin.llmService.callJson(
-      promptConfig.template,
-      promptVariables,
-      promptConfig.model
+    new import_obsidian11.Notice(
+      lessonsToGenerate.length === 1 ? `Generating lesson ${completedLessonIds.length + 1} of ${totalLessons}: ${lessonsToGenerate[0].lesson.title}` : `Generating ${lessonsToGenerate.length} selected lessons.`
     );
-    const validated = await validateLessonDraft(
-      plugin,
-      raw,
-      promptConfig.model,
-      renderedPrompt,
-      stage0.seedTopic,
-      nextLesson.module.title,
-      nextLesson.lesson
-    );
-    const draft = {
-      ...validated.lesson,
-      difficulty: validated.lesson.difficulty,
-      sourceRefs: validated.lesson.sourceRefs ?? []
-    };
-    await writeLessonOutput(
-      plugin,
-      curriculum,
-      outputs,
-      nextLesson.module,
-      nextLesson.lesson,
-      draft,
-      context.mode,
-      renderedPrompt
-    );
-    const updatedCompletedLessonIds = [...completedLessonIds, nextLesson.lesson.lessonId];
-    const updatedGeneratedLessonSummaries = {
-      ...generatedLessonSummaries,
-      [nextLesson.lesson.lessonId]: {
+    const updatedCompletedLessonIds = [...completedLessonIds];
+    const updatedGeneratedLessonSummaries = { ...generatedLessonSummaries };
+    for (const [batchIndex, nextLesson] of lessonsToGenerate.entries()) {
+      await plugin.cacheService.writeStage(courseId, 4, {
+        courseId,
+        progress: {
+          totalLessons,
+          completedLessons: updatedCompletedLessonIds.length,
+          currentLesson: nextLesson.lesson.title
+        },
+        outputs,
+        completedLessonIds: [...updatedCompletedLessonIds],
+        generatedLessonSummaries: { ...updatedGeneratedLessonSummaries },
+        status: "pending",
+        startedAt
+      });
+      const promptVariables = {
+        topic: stage0.seedTopic,
+        courseTitle: curriculum.title,
+        moduleTitle: nextLesson.module.title,
+        lessonTitle: nextLesson.lesson.title,
+        lessonDescription: nextLesson.lesson.description,
+        prerequisiteSummary: describePrerequisites(nextLesson.lesson, lessonOrder, updatedGeneratedLessonSummaries),
+        generationMode: context.mode,
+        contextSection: buildContextSection3(context)
+      };
+      const renderedPrompt = renderPromptTemplate(promptConfig.template, promptVariables);
+      const raw = await plugin.llmService.callJson(
+        promptConfig.template,
+        promptVariables,
+        promptConfig.model
+      );
+      const validated = await validateLessonDraft(
+        plugin,
+        raw,
+        promptConfig.model,
+        renderedPrompt,
+        stage0.seedTopic,
+        nextLesson.module.title,
+        nextLesson.lesson
+      );
+      const draft = {
+        ...validated.lesson,
+        difficulty: validated.lesson.difficulty,
+        sourceRefs: validated.lesson.sourceRefs ?? []
+      };
+      const generatedAt = (/* @__PURE__ */ new Date()).toISOString();
+      await writeLessonOutput(
+        plugin,
+        curriculum,
+        outputs,
+        nextLesson.module,
+        nextLesson.lesson,
+        draft,
+        context.mode,
+        renderedPrompt,
+        {
+          model: promptConfig.model,
+          promptPath: promptConfig.path,
+          topic: stage0.seedTopic,
+          moduleTitle: nextLesson.module.title,
+          lessonId: nextLesson.lesson.lessonId,
+          generationMode: context.mode,
+          sourceFileCount: context.fileCount,
+          generatedAt,
+          repairUsed: validated.repairUsed
+        }
+      );
+      updatedCompletedLessonIds.push(nextLesson.lesson.lessonId);
+      updatedGeneratedLessonSummaries[nextLesson.lesson.lessonId] = {
         title: draft.title,
         summary: draft.summary
+      };
+      if (batchIndex < lessonsToGenerate.length - 1) {
+        await plugin.cacheService.writeStage(courseId, 4, {
+          courseId,
+          progress: {
+            totalLessons,
+            completedLessons: updatedCompletedLessonIds.length,
+            currentLesson: lessonsToGenerate[batchIndex + 1].lesson.title
+          },
+          outputs,
+          completedLessonIds: [...updatedCompletedLessonIds],
+          generatedLessonSummaries: { ...updatedGeneratedLessonSummaries },
+          status: "pending",
+          startedAt
+        });
       }
-    };
+    }
     await writeSupportingOutputs(plugin, curriculum, outputs);
     const isComplete = updatedCompletedLessonIds.length === totalLessons;
     const cache = {
@@ -6223,7 +6272,7 @@ async function runStage4(plugin, courseId) {
     };
     await plugin.cacheService.writeStage(courseId, 4, cache);
     new import_obsidian11.Notice(
-      isComplete ? `Generated all ${totalLessons} lessons in ${outputs.rootDir}.` : `Generated ${draft.title}. ${totalLessons - updatedCompletedLessonIds.length} lesson${totalLessons - updatedCompletedLessonIds.length === 1 ? "" : "s"} remaining.`
+      isComplete ? `Generated all ${totalLessons} lessons in ${outputs.rootDir}.` : lessonsToGenerate.length === 1 ? `Generated ${updatedGeneratedLessonSummaries[lessonsToGenerate[0].lesson.lessonId]?.title ?? lessonsToGenerate[0].lesson.title}. ${totalLessons - updatedCompletedLessonIds.length} lesson${totalLessons - updatedCompletedLessonIds.length === 1 ? "" : "s"} remaining.` : `Generated ${lessonsToGenerate.length} lessons. ${totalLessons - updatedCompletedLessonIds.length} lesson${totalLessons - updatedCompletedLessonIds.length === 1 ? "" : "s"} remaining.`
     );
   } catch (error) {
     new import_obsidian11.Notice(`Delve: lesson generation failed \u2014 ${error.message}`);
@@ -6275,6 +6324,17 @@ function normalizeCompletedLessonIds(cache, outputs) {
   const knownLessonIds = new Set(Object.keys(outputs.lessonPaths));
   return completedLessonIds.filter((lessonId) => knownLessonIds.has(lessonId));
 }
+function normalizeSelectedLessonIds(lessonIds, lessonOrder) {
+  if (!lessonIds?.length)
+    return [];
+  const knownLessonIds = new Set(lessonOrder.map((item) => item.lesson.lessonId));
+  const uniqueLessonIds = /* @__PURE__ */ new Set();
+  lessonIds.forEach((lessonId) => {
+    if (knownLessonIds.has(lessonId))
+      uniqueLessonIds.add(lessonId);
+  });
+  return [...uniqueLessonIds];
+}
 async function writeSupportingOutputs(plugin, curriculum, outputs) {
   const courseIndexLink = wikiLinkFromPath(outputs.courseIndexPath);
   await writeMarkdownFile(
@@ -6303,7 +6363,7 @@ async function writeSupportingOutputs(plugin, curriculum, outputs) {
     outputs.courseIndexPath
   );
 }
-async function writeLessonOutput(plugin, curriculum, outputs, module2, lesson, draft, mode, renderedPrompt) {
+async function writeLessonOutput(plugin, curriculum, outputs, module2, lesson, draft, mode, renderedPrompt, promptMeta) {
   const lessonOrder = flattenLessons(curriculum);
   const flatLessons = lessonOrder.map((item) => item.lesson);
   const lessonIndex = flatLessons.findIndex((item) => item.lessonId === lesson.lessonId);
@@ -6323,7 +6383,7 @@ async function writeLessonOutput(plugin, curriculum, outputs, module2, lesson, d
       moduleId: module2.moduleId,
       generationMode: mode,
       sourceRefs: draft.sourceRefs,
-      generatedAt: (/* @__PURE__ */ new Date()).toISOString()
+      generatedAt: promptMeta.generatedAt
     }),
     "",
     `# ${draft.title}`,
@@ -6334,7 +6394,7 @@ async function writeLessonOutput(plugin, curriculum, outputs, module2, lesson, d
     "",
     draft.bodyMarkdown.trim(),
     "",
-    buildPromptCallout(renderedPrompt),
+    buildPromptCallout(renderedPrompt, promptMeta),
     "",
     "---",
     "",
@@ -6345,7 +6405,7 @@ async function writeLessonOutput(plugin, curriculum, outputs, module2, lesson, d
 async function validateLessonDraft(plugin, raw, model, renderedPrompt, topic, moduleTitle, lesson) {
   const initial = Stage4LessonResponseSchema.safeParse(raw);
   if (initial.success && !looksOffTopic(initial.data.lesson, topic, moduleTitle, lesson)) {
-    return initial.data;
+    return { ...initial.data, repairUsed: false };
   }
   const issues = initial.success ? ["lesson drifted away from the requested topic and focused on output-format or JSON/schema details"] : initial.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`);
   const repaired = await plugin.llmService.callJson(
@@ -6357,7 +6417,7 @@ async function validateLessonDraft(plugin, raw, model, renderedPrompt, topic, mo
   if (looksOffTopic(repairedResult.lesson, topic, moduleTitle, lesson)) {
     throw new Error(`Generated lesson drifted off-topic for "${lesson.title}".`);
   }
-  return repairedResult;
+  return { ...repairedResult, repairUsed: true };
 }
 function buildLessonRepairPrompt(renderedPrompt, topic, moduleTitle, lesson, raw, issues) {
   return [
@@ -6417,10 +6477,24 @@ function looksOffTopic(draft, topic, moduleTitle, lesson) {
     return true;
   return false;
 }
-function buildPromptCallout(renderedPrompt) {
+function buildPromptCallout(renderedPrompt, meta) {
   const lines = renderedPrompt.trim().split("\n");
+  const metaLines = [
+    `- Model: \`${meta.model}\``,
+    `- Prompt note: \`${meta.promptPath}\``,
+    `- Topic: ${meta.topic}`,
+    `- Module: ${meta.moduleTitle}`,
+    `- Lesson ID: \`${meta.lessonId}\``,
+    `- Generation mode: \`${meta.generationMode}\``,
+    `- Source files in context: ${meta.sourceFileCount}`,
+    `- Repair pass used: ${meta.repairUsed ? "yes" : "no"}`,
+    `- Generated at: \`${meta.generatedAt}\``
+  ];
   const quotedPrompt = [
     "> [!note]- Generation Prompt",
+    ">",
+    ...metaLines.map((line) => `> ${line}`),
+    ">",
     "> ```text",
     ...lines.map((line) => `> ${line}`),
     "> ```"
@@ -6502,6 +6576,7 @@ var SyllabusEditorView = class extends import_obsidian12.ItemView {
     __publicField(this, "saving", false);
     __publicField(this, "dirty", false);
     __publicField(this, "generatingLessons", false);
+    __publicField(this, "selectedLessonIds", /* @__PURE__ */ new Set());
   }
   getViewType() {
     return SYLLABUS_VIEW_TYPE;
@@ -6517,6 +6592,7 @@ var SyllabusEditorView = class extends import_obsidian12.ItemView {
     this.saving = false;
     this.dirty = false;
     this.generatingLessons = false;
+    this.selectedLessonIds = /* @__PURE__ */ new Set();
     await this.render();
   }
   getState() {
@@ -6540,10 +6616,13 @@ var SyllabusEditorView = class extends import_obsidian12.ItemView {
     const completedLessons = stage4?.progress.completedLessons ?? 0;
     const remainingLessons = Math.max(lessonCount - completedLessons, 0);
     const generationComplete = stage4?.status === "complete" && lessonCount > 0;
+    const completedLessonIds = new Set(stage4?.completedLessonIds ?? []);
+    this.syncSelectedLessonIds(completedLessonIds);
+    const selectedPendingLessonCount = this.getSelectedPendingLessonCount(completedLessonIds);
     const header = contentEl.createDiv("delve-syllabus__header");
     header.createEl("h2", { text: `Curriculum Draft: ${this.state.seedTopic}` });
     header.createEl("p", {
-      text: "Review and edit the draft syllabus, then generate lessons one at a time as you are ready to study them.",
+      text: "Review and edit the draft syllabus, then choose the lessons you want to generate in this session.",
       cls: "delve-syllabus__hint"
     });
     const meta = header.createDiv("delve-syllabus__meta");
@@ -6615,10 +6694,35 @@ var SyllabusEditorView = class extends import_obsidian12.ItemView {
       const lessons = moduleCard.createDiv("delve-syllabus__lessons");
       module2.lessons.forEach((lesson, lessonIndex) => {
         const lessonCard = lessons.createDiv("delve-syllabus__lesson");
-        lessonCard.createEl("div", {
+        const lessonHeader = lessonCard.createDiv("delve-syllabus__lesson-header");
+        lessonHeader.createEl("div", {
           text: `Lesson ${lessonIndex + 1}`,
           cls: "delve-syllabus__lesson-index"
         });
+        const lessonControls = lessonHeader.createDiv("delve-syllabus__lesson-controls");
+        const isCompleted = completedLessonIds.has(lesson.lessonId);
+        if (isCompleted) {
+          lessonControls.createEl("span", {
+            text: "Generated",
+            cls: "delve-syllabus__lesson-badge"
+          });
+        } else {
+          const checkboxLabel = lessonControls.createEl("label", {
+            cls: "delve-syllabus__checkbox"
+          });
+          const checkbox = checkboxLabel.createEl("input", {
+            type: "checkbox"
+          });
+          checkbox.checked = this.selectedLessonIds.has(lesson.lessonId);
+          checkbox.addEventListener("change", async () => {
+            if (checkbox.checked)
+              this.selectedLessonIds.add(lesson.lessonId);
+            else
+              this.selectedLessonIds.delete(lesson.lessonId);
+            await this.render();
+          });
+          checkboxLabel.createSpan({ text: "Generate" });
+        }
         this.renderField(
           lessonCard,
           "Lesson title",
@@ -6660,6 +6764,24 @@ var SyllabusEditorView = class extends import_obsidian12.ItemView {
       status.textContent = "Draft saved locally in plugin data.";
     }
     const actions = footer.createDiv("delve-syllabus__actions");
+    const selectAllBtn = actions.createEl("button", {
+      text: "Select all",
+      cls: "delve-taxonomy__action-btn"
+    });
+    selectAllBtn.disabled = this.saving || this.generatingLessons || remainingLessons === 0;
+    selectAllBtn.addEventListener("click", async () => {
+      this.selectAllRemainingLessons(completedLessonIds);
+      await this.render();
+    });
+    const selectNoneBtn = actions.createEl("button", {
+      text: "Select none",
+      cls: "delve-taxonomy__action-btn"
+    });
+    selectNoneBtn.disabled = this.saving || this.generatingLessons || selectedPendingLessonCount === 0;
+    selectNoneBtn.addEventListener("click", async () => {
+      this.selectedLessonIds.clear();
+      await this.render();
+    });
     const regenerateBtn = actions.createEl("button", {
       text: "Regenerate draft",
       cls: "delve-taxonomy__action-btn"
@@ -6673,7 +6795,12 @@ var SyllabusEditorView = class extends import_obsidian12.ItemView {
     saveBtn.disabled = this.saving || this.generatingLessons || !this.dirty;
     saveBtn.addEventListener("click", () => void this.handleSaveDraft());
     const finalizeBtn = actions.createEl("button", {
-      text: getGenerateButtonLabel(this.generatingLessons, generationComplete, completedLessons),
+      text: getGenerateButtonLabel(
+        this.generatingLessons,
+        generationComplete,
+        completedLessons,
+        selectedPendingLessonCount
+      ),
       cls: "mod-cta delve-btn-primary delve-syllabus__finalize"
     });
     finalizeBtn.disabled = this.saving || this.generatingLessons || Boolean(this.state.loading) || generationComplete;
@@ -6734,13 +6861,19 @@ var SyllabusEditorView = class extends import_obsidian12.ItemView {
     }
     if (this.generatingLessons)
       return;
+    if (this.selectedLessonIds.size === 0) {
+      new import_obsidian12.Notice("Select at least one lesson to generate.");
+      return;
+    }
     this.generatingLessons = true;
     await this.render();
     try {
       await this.writeCurrentStage3(courseId);
       await this.ensureStage0SeedTopic(courseId);
       this.dirty = false;
-      await runStage4(this.plugin, courseId);
+      const selectedLessonIds = [...this.selectedLessonIds];
+      await runStage4(this.plugin, courseId, { lessonIds: selectedLessonIds });
+      selectedLessonIds.forEach((lessonId) => this.selectedLessonIds.delete(lessonId));
     } catch (e) {
       new import_obsidian12.Notice(`Could not generate lessons: ${e.message}`);
     } finally {
@@ -6757,6 +6890,34 @@ var SyllabusEditorView = class extends import_obsidian12.ItemView {
     const saveBtn = this.contentEl.querySelector(".delve-syllabus__save");
     if (saveBtn)
       saveBtn.disabled = false;
+  }
+  syncSelectedLessonIds(completedLessonIds) {
+    const availableLessonIds = new Set(
+      this.state.curriculum.modules.flatMap((module2) => module2.lessons.map((lesson) => lesson.lessonId))
+    );
+    this.selectedLessonIds.forEach((lessonId) => {
+      if (!availableLessonIds.has(lessonId) || completedLessonIds.has(lessonId)) {
+        this.selectedLessonIds.delete(lessonId);
+      }
+    });
+  }
+  getSelectedPendingLessonCount(completedLessonIds) {
+    let total = 0;
+    this.selectedLessonIds.forEach((lessonId) => {
+      if (!completedLessonIds.has(lessonId))
+        total += 1;
+    });
+    return total;
+  }
+  selectAllRemainingLessons(completedLessonIds) {
+    this.selectedLessonIds.clear();
+    this.state.curriculum.modules.forEach((module2) => {
+      module2.lessons.forEach((lesson) => {
+        if (!completedLessonIds.has(lesson.lessonId)) {
+          this.selectedLessonIds.add(lesson.lessonId);
+        }
+      });
+    });
   }
   getCourseId() {
     return this.state.courseId || this.state.curriculum.courseId || "";
@@ -6824,14 +6985,18 @@ function describeSourceMode(mode, fileCount) {
   const label = mode === "grounded" ? "Grounded" : "Augmented";
   return `${label} \u2014 ${fileCount} source file${fileCount === 1 ? "" : "s"}`;
 }
-function getGenerateButtonLabel(generatingLessons, generationComplete, completedLessons) {
+function getGenerateButtonLabel(generatingLessons, generationComplete, completedLessons, selectedLessonCount) {
   if (generatingLessons)
-    return "Generating next lesson\u2026";
+    return selectedLessonCount > 1 ? "Generating selected lessons\u2026" : "Generating selected lesson\u2026";
   if (generationComplete)
     return "All lessons generated";
+  if (selectedLessonCount > 1)
+    return `Generate ${selectedLessonCount} lessons`;
+  if (selectedLessonCount === 1)
+    return "Generate selected lesson";
   if (completedLessons > 0)
-    return "Generate next lesson";
-  return "Generate first lesson";
+    return "Select lessons to generate";
+  return "Select lessons to begin";
 }
 function generateRecoveredCourseId(seedTopic) {
   const topicSlug = seedTopic.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "course";
