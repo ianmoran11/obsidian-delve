@@ -30,6 +30,7 @@ export class SyllabusEditorView extends ItemView {
   private saving = false;
   private dirty = false;
   private generatingLessons = false;
+  private selectedLessonIds = new Set<string>();
 
   constructor(leaf: WorkspaceLeaf, private plugin: DelvePlugin) {
     super(leaf);
@@ -53,6 +54,7 @@ export class SyllabusEditorView extends ItemView {
     this.saving = false;
     this.dirty = false;
     this.generatingLessons = false;
+    this.selectedLessonIds = new Set<string>();
     await this.render();
   }
 
@@ -79,11 +81,14 @@ export class SyllabusEditorView extends ItemView {
     const completedLessons = stage4?.progress.completedLessons ?? 0;
     const remainingLessons = Math.max(lessonCount - completedLessons, 0);
     const generationComplete = stage4?.status === 'complete' && lessonCount > 0;
+    const completedLessonIds = new Set(stage4?.completedLessonIds ?? []);
+    this.syncSelectedLessonIds(completedLessonIds);
+    const selectedPendingLessonCount = this.getSelectedPendingLessonCount(completedLessonIds);
 
     const header = contentEl.createDiv('delve-syllabus__header');
     header.createEl('h2', { text: `Curriculum Draft: ${this.state.seedTopic}` });
     header.createEl('p', {
-      text: 'Review and edit the draft syllabus, then generate lessons one at a time as you are ready to study them.',
+      text: 'Review and edit the draft syllabus, then choose the lessons you want to generate in this session.',
       cls: 'delve-syllabus__hint',
     });
 
@@ -165,10 +170,33 @@ export class SyllabusEditorView extends ItemView {
       const lessons = moduleCard.createDiv('delve-syllabus__lessons');
       module.lessons.forEach((lesson, lessonIndex) => {
         const lessonCard = lessons.createDiv('delve-syllabus__lesson');
-        lessonCard.createEl('div', {
+        const lessonHeader = lessonCard.createDiv('delve-syllabus__lesson-header');
+        lessonHeader.createEl('div', {
           text: `Lesson ${lessonIndex + 1}`,
           cls: 'delve-syllabus__lesson-index',
         });
+        const lessonControls = lessonHeader.createDiv('delve-syllabus__lesson-controls');
+        const isCompleted = completedLessonIds.has(lesson.lessonId);
+        if (isCompleted) {
+          lessonControls.createEl('span', {
+            text: 'Generated',
+            cls: 'delve-syllabus__lesson-badge',
+          });
+        } else {
+          const checkboxLabel = lessonControls.createEl('label', {
+            cls: 'delve-syllabus__checkbox',
+          });
+          const checkbox = checkboxLabel.createEl('input', {
+            type: 'checkbox',
+          }) as HTMLInputElement;
+          checkbox.checked = this.selectedLessonIds.has(lesson.lessonId);
+          checkbox.addEventListener('change', async () => {
+            if (checkbox.checked) this.selectedLessonIds.add(lesson.lessonId);
+            else this.selectedLessonIds.delete(lesson.lessonId);
+            await this.render();
+          });
+          checkboxLabel.createSpan({ text: 'Generate' });
+        }
 
         this.renderField(
           lessonCard,
@@ -219,6 +247,26 @@ export class SyllabusEditorView extends ItemView {
     }
 
     const actions = footer.createDiv('delve-syllabus__actions');
+    const selectAllBtn = actions.createEl('button', {
+      text: 'Select all',
+      cls: 'delve-taxonomy__action-btn',
+    }) as HTMLButtonElement;
+    selectAllBtn.disabled = this.saving || this.generatingLessons || remainingLessons === 0;
+    selectAllBtn.addEventListener('click', async () => {
+      this.selectAllRemainingLessons(completedLessonIds);
+      await this.render();
+    });
+
+    const selectNoneBtn = actions.createEl('button', {
+      text: 'Select none',
+      cls: 'delve-taxonomy__action-btn',
+    }) as HTMLButtonElement;
+    selectNoneBtn.disabled = this.saving || this.generatingLessons || selectedPendingLessonCount === 0;
+    selectNoneBtn.addEventListener('click', async () => {
+      this.selectedLessonIds.clear();
+      await this.render();
+    });
+
     const regenerateBtn = actions.createEl('button', {
       text: 'Regenerate draft',
       cls: 'delve-taxonomy__action-btn',
@@ -234,7 +282,12 @@ export class SyllabusEditorView extends ItemView {
     saveBtn.addEventListener('click', () => void this.handleSaveDraft());
 
     const finalizeBtn = actions.createEl('button', {
-      text: getGenerateButtonLabel(this.generatingLessons, generationComplete, completedLessons),
+      text: getGenerateButtonLabel(
+        this.generatingLessons,
+        generationComplete,
+        completedLessons,
+        selectedPendingLessonCount
+      ),
       cls: 'mod-cta delve-btn-primary delve-syllabus__finalize',
     }) as HTMLButtonElement;
     finalizeBtn.disabled = this.saving || this.generatingLessons || Boolean(this.state.loading) || generationComplete;
@@ -309,13 +362,19 @@ export class SyllabusEditorView extends ItemView {
       return;
     }
     if (this.generatingLessons) return;
+    if (this.selectedLessonIds.size === 0) {
+      new Notice('Select at least one lesson to generate.');
+      return;
+    }
     this.generatingLessons = true;
     await this.render();
     try {
       await this.writeCurrentStage3(courseId);
       await this.ensureStage0SeedTopic(courseId);
       this.dirty = false;
-      await runStage4(this.plugin, courseId);
+      const selectedLessonIds = [...this.selectedLessonIds];
+      await runStage4(this.plugin, courseId, { lessonIds: selectedLessonIds });
+      selectedLessonIds.forEach(lessonId => this.selectedLessonIds.delete(lessonId));
     } catch (e) {
       new Notice(`Could not generate lessons: ${(e as Error).message}`);
     } finally {
@@ -332,6 +391,36 @@ export class SyllabusEditorView extends ItemView {
     }
     const saveBtn = this.contentEl.querySelector('.delve-syllabus__save') as HTMLButtonElement | null;
     if (saveBtn) saveBtn.disabled = false;
+  }
+
+  private syncSelectedLessonIds(completedLessonIds: Set<string>): void {
+    const availableLessonIds = new Set(
+      this.state.curriculum.modules.flatMap(module => module.lessons.map(lesson => lesson.lessonId))
+    );
+    this.selectedLessonIds.forEach(lessonId => {
+      if (!availableLessonIds.has(lessonId) || completedLessonIds.has(lessonId)) {
+        this.selectedLessonIds.delete(lessonId);
+      }
+    });
+  }
+
+  private getSelectedPendingLessonCount(completedLessonIds: Set<string>): number {
+    let total = 0;
+    this.selectedLessonIds.forEach(lessonId => {
+      if (!completedLessonIds.has(lessonId)) total += 1;
+    });
+    return total;
+  }
+
+  private selectAllRemainingLessons(completedLessonIds: Set<string>): void {
+    this.selectedLessonIds.clear();
+    this.state.curriculum.modules.forEach(module => {
+      module.lessons.forEach(lesson => {
+        if (!completedLessonIds.has(lesson.lessonId)) {
+          this.selectedLessonIds.add(lesson.lessonId);
+        }
+      });
+    });
   }
 
   private getCourseId(): string {
@@ -410,12 +499,15 @@ function describeSourceMode(mode: SourceMode, fileCount: number): string {
 function getGenerateButtonLabel(
   generatingLessons: boolean,
   generationComplete: boolean,
-  completedLessons: number
+  completedLessons: number,
+  selectedLessonCount: number
 ): string {
-  if (generatingLessons) return 'Generating next lesson…';
+  if (generatingLessons) return selectedLessonCount > 1 ? 'Generating selected lessons…' : 'Generating selected lesson…';
   if (generationComplete) return 'All lessons generated';
-  if (completedLessons > 0) return 'Generate next lesson';
-  return 'Generate first lesson';
+  if (selectedLessonCount > 1) return `Generate ${selectedLessonCount} lessons`;
+  if (selectedLessonCount === 1) return 'Generate selected lesson';
+  if (completedLessons > 0) return 'Select lessons to generate';
+  return 'Select lessons to begin';
 }
 
 function generateRecoveredCourseId(seedTopic: string): string {

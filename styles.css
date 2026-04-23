@@ -230,6 +230,35 @@
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
+.delve-syllabus__lesson-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.delve-syllabus__lesson-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.delve-syllabus__checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.82em;
+  color: var(--text-muted);
+}
+.delve-syllabus__lesson-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--color-green, #4caf50) 35%, transparent);
+  color: var(--color-green, #4caf50);
+  font-size: 0.78em;
+  font-weight: 600;
+}
 .delve-syllabus__lessons {
   display: flex; flex-direction: column; gap: 10px;
   margin-top: 10px;
