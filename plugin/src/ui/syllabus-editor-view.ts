@@ -442,6 +442,8 @@ export class SyllabusEditorView extends ItemView {
   }
 
   private async writeCurrentStage3(courseId: string): Promise<void> {
+    const existingMeta = (await this.plugin.cacheService.listCourses())
+      .find(course => course.courseId === courseId);
     const cache: Stage3Cache = {
       courseId,
       curriculum: {
@@ -452,6 +454,11 @@ export class SyllabusEditorView extends ItemView {
       completedAt: new Date().toISOString(),
     };
     await this.plugin.cacheService.writeStage(courseId, 3, cache);
+    await this.plugin.cacheService.writeMeta({
+      courseId,
+      title: this.state.curriculum.title || this.state.seedTopic || existingMeta?.title || courseId,
+      createdAt: existingMeta?.createdAt ?? new Date().toISOString(),
+    });
   }
 
   private async ensureStage0SeedTopic(courseId: string): Promise<void> {

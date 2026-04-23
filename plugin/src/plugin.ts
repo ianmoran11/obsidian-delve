@@ -10,6 +10,7 @@ import { ConceptsView } from './ui/concepts-view';
 import { DiagnosticView } from './ui/diagnostic-view';
 import { SyllabusEditorView } from './ui/syllabus-editor-view';
 import { ResumeModal } from './ui/resume-modal';
+import { OpenCurriculumModal } from './ui/open-curriculum-modal';
 import {
   TAXONOMY_VIEW_TYPE,
   CONCEPTS_VIEW_TYPE,
@@ -85,6 +86,36 @@ export default class DelvePlugin extends Plugin {
       name: 'Start new course',
       callback: () => new TopicInputModal(this.app, this).open(),
     });
+
+    this.addCommand({
+      id: 'open-saved-curriculum',
+      name: 'Open saved curriculum',
+      callback: () => void this.openSavedCurriculum(),
+    });
+  }
+
+  private async openSavedCurriculum(): Promise<void> {
+    const courses = await this.cacheService.listCourses();
+    const curricula = [];
+
+    for (const course of courses) {
+      const stage3 = await this.cacheService.readStage(course.courseId, 3);
+      if (stage3?.curriculum) {
+        curricula.push({
+          ...course,
+          title: stage3.curriculum.title || course.title,
+        });
+      }
+    }
+
+    if (curricula.length === 0) {
+      new Notice('No saved curricula found.');
+      return;
+    }
+
+    new OpenCurriculumModal(this.app, curricula, course => {
+      void resumeStage3(this, course.courseId);
+    }).open();
   }
 
   private async checkResume(): Promise<void> {

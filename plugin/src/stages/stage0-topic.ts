@@ -17,6 +17,12 @@ export async function runStage0(
   courseId: string
 ): Promise<void> {
   await plugin.lockService.acquire(courseId, 0);
+  const createdAt = new Date().toISOString();
+  await plugin.cacheService.writeMeta({
+    courseId,
+    title: seedTopic,
+    createdAt,
+  });
   await plugin.cacheService.writeStage(courseId, 0, {
     courseId,
     seedTopic,
@@ -24,7 +30,7 @@ export async function runStage0(
     selectedScope: [],
     scopeSummary: '',
     status: 'pending',
-    startedAt: new Date().toISOString(),
+    startedAt: createdAt,
   });
 
   try {
@@ -51,7 +57,7 @@ export async function runStage0(
       selectedScope: [],
       scopeSummary: '',
       status: 'pending',
-      startedAt: new Date().toISOString(),
+      startedAt: createdAt,
     });
 
     const leaf = plugin.app.workspace.getLeaf(false);

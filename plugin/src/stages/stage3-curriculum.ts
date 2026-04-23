@@ -83,6 +83,11 @@ export async function runStage3(
       completedAt: new Date().toISOString(),
     };
     await plugin.cacheService.writeStage(courseId, 3, cache);
+    await plugin.cacheService.writeMeta({
+      courseId,
+      title: curriculum.title,
+      createdAt: stage0.startedAt ?? stage0.completedAt ?? new Date().toISOString(),
+    });
     await plugin.lockService.release();
 
     await leaf.setViewState({
