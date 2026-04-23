@@ -63,7 +63,29 @@ export class CacheService {
 
   async listCourses(): Promise<CourseMeta[]> {
     const data = await this.readAll();
-    return Object.values(data.meta);
+    const courseIds = new Set([
+      ...Object.keys(data.courses),
+      ...Object.keys(data.meta),
+    ]);
+
+    return [...courseIds]
+      .map(courseId => {
+        const meta = data.meta[courseId];
+        if (meta) {
+          return {
+            ...meta,
+            title: this.deriveCourseTitle(courseId, data.courses[courseId]) ?? meta.title,
+          };
+        }
+
+        const course = data.courses[courseId];
+        return {
+          courseId,
+          title: this.deriveCourseTitle(courseId, course) ?? courseId,
+          createdAt: this.deriveCreatedAt(course) ?? new Date(0).toISOString(),
+        };
+      })
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
 
   async clearCourse(courseId: CourseId): Promise<void> {
@@ -71,5 +93,26 @@ export class CacheService {
     delete data.courses[courseId];
     delete data.meta[courseId];
     await this.plugin.saveData(data);
+  }
+
+  private deriveCourseTitle(courseId: CourseId, course?: StageCache): string | undefined {
+    return course?.[3]?.curriculum?.title
+      || course?.[0]?.seedTopic
+      || this.readableCourseId(courseId);
+  }
+
+  private deriveCreatedAt(course?: StageCache): string | undefined {
+    return course?.[0]?.startedAt
+      || course?.[0]?.completedAt
+      || course?.[3]?.startedAt
+      || course?.[3]?.completedAt
+      || course?.[4]?.startedAt
+      || course?.[4]?.completedAt;
+  }
+
+  private readableCourseId(courseId: string): string {
+    return courseId
+      .replace(/[-_]+/g, ' ')
+      .replace(/\b\w/g, char => char.toUpperCase());
   }
 }

@@ -30,7 +30,7 @@ __export(main_exports, {
 module.exports = __toCommonJS(main_exports);
 
 // src/plugin.ts
-var import_obsidian14 = require("obsidian");
+var import_obsidian15 = require("obsidian");
 
 // src/settings.ts
 var import_obsidian = require("obsidian");
@@ -609,13 +609,40 @@ var CacheService = class {
   }
   async listCourses() {
     const data = await this.readAll();
-    return Object.values(data.meta);
+    const courseIds = /* @__PURE__ */ new Set([
+      ...Object.keys(data.courses),
+      ...Object.keys(data.meta)
+    ]);
+    return [...courseIds].map((courseId) => {
+      const meta = data.meta[courseId];
+      if (meta) {
+        return {
+          ...meta,
+          title: this.deriveCourseTitle(courseId, data.courses[courseId]) ?? meta.title
+        };
+      }
+      const course = data.courses[courseId];
+      return {
+        courseId,
+        title: this.deriveCourseTitle(courseId, course) ?? courseId,
+        createdAt: this.deriveCreatedAt(course) ?? (/* @__PURE__ */ new Date(0)).toISOString()
+      };
+    }).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
   async clearCourse(courseId) {
     const data = await this.readAll();
     delete data.courses[courseId];
     delete data.meta[courseId];
     await this.plugin.saveData(data);
+  }
+  deriveCourseTitle(courseId, course) {
+    return course?.[3]?.curriculum?.title || course?.[0]?.seedTopic || this.readableCourseId(courseId);
+  }
+  deriveCreatedAt(course) {
+    return course?.[0]?.startedAt || course?.[0]?.completedAt || course?.[3]?.startedAt || course?.[3]?.completedAt || course?.[4]?.startedAt || course?.[4]?.completedAt;
+  }
+  readableCourseId(courseId) {
+    return courseId.replace(/[-_]+/g, " ").replace(/\b\w/g, (char) => char.toUpperCase());
   }
 };
 
@@ -4918,6 +4945,12 @@ function findNodeTitle(taxonomy, id) {
 // src/stages/stage0-topic.ts
 async function runStage0(plugin, seedTopic, courseId) {
   await plugin.lockService.acquire(courseId, 0);
+  const createdAt = (/* @__PURE__ */ new Date()).toISOString();
+  await plugin.cacheService.writeMeta({
+    courseId,
+    title: seedTopic,
+    createdAt
+  });
   await plugin.cacheService.writeStage(courseId, 0, {
     courseId,
     seedTopic,
@@ -4925,7 +4958,7 @@ async function runStage0(plugin, seedTopic, courseId) {
     selectedScope: [],
     scopeSummary: "",
     status: "pending",
-    startedAt: (/* @__PURE__ */ new Date()).toISOString()
+    startedAt: createdAt
   });
   try {
     new import_obsidian4.Notice("Generating topic taxonomy\u2026");
@@ -4948,7 +4981,7 @@ async function runStage0(plugin, seedTopic, courseId) {
       selectedScope: [],
       scopeSummary: "",
       status: "pending",
-      startedAt: (/* @__PURE__ */ new Date()).toISOString()
+      startedAt: createdAt
     });
     const leaf = plugin.app.workspace.getLeaf(false);
     await leaf.setViewState({
@@ -5604,6 +5637,11 @@ async function runStage3(plugin, courseId) {
       completedAt: (/* @__PURE__ */ new Date()).toISOString()
     };
     await plugin.cacheService.writeStage(courseId, 3, cache);
+    await plugin.cacheService.writeMeta({
+      courseId,
+      title: curriculum.title,
+      createdAt: stage0.startedAt ?? stage0.completedAt ?? (/* @__PURE__ */ new Date()).toISOString()
+    });
     await plugin.lockService.release();
     await leaf.setViewState({
       type: SYLLABUS_VIEW_TYPE,
@@ -6935,6 +6973,7 @@ var SyllabusEditorView = class extends import_obsidian12.ItemView {
     return recoveredCourseId;
   }
   async writeCurrentStage3(courseId) {
+    const existingMeta = (await this.plugin.cacheService.listCourses()).find((course) => course.courseId === courseId);
     const cache = {
       courseId,
       curriculum: {
@@ -6945,6 +6984,11 @@ var SyllabusEditorView = class extends import_obsidian12.ItemView {
       completedAt: (/* @__PURE__ */ new Date()).toISOString()
     };
     await this.plugin.cacheService.writeStage(courseId, 3, cache);
+    await this.plugin.cacheService.writeMeta({
+      courseId,
+      title: this.state.curriculum.title || this.state.seedTopic || existingMeta?.title || courseId,
+      createdAt: existingMeta?.createdAt ?? (/* @__PURE__ */ new Date()).toISOString()
+    });
   }
   async ensureStage0SeedTopic(courseId) {
     const existingStage0 = await this.plugin.cacheService.readStage(courseId, 0);
@@ -7052,8 +7096,42 @@ var ResumeModal = class extends import_obsidian13.Modal {
   }
 };
 
+// src/ui/open-curriculum-modal.ts
+var import_obsidian14 = require("obsidian");
+var OpenCurriculumModal = class extends import_obsidian14.FuzzySuggestModal {
+  constructor(app, courses, onChoose) {
+    super(app);
+    this.courses = courses;
+    this.onChoose = onChoose;
+    this.setPlaceholder("Select a saved curriculum\u2026");
+  }
+  getItems() {
+    return this.courses;
+  }
+  getItemText(course) {
+    return course.title;
+  }
+  renderSuggestion(match, el) {
+    const { item: course } = match;
+    el.createDiv({ text: course.title, cls: "delve-saved-curriculum__title" });
+    el.createDiv({
+      text: `Course ID: ${course.courseId} \xB7 Saved ${formatSavedDate(course.createdAt)}`,
+      cls: "delve-saved-curriculum__meta"
+    });
+  }
+  onChooseItem(course) {
+    this.onChoose(course);
+  }
+};
+function formatSavedDate(value) {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime()))
+    return value;
+  return parsed.toLocaleString();
+}
+
 // src/plugin.ts
-var DelvePlugin = class extends import_obsidian14.Plugin {
+var DelvePlugin = class extends import_obsidian15.Plugin {
   constructor() {
     super(...arguments);
     __publicField(this, "settings");
@@ -7112,6 +7190,31 @@ var DelvePlugin = class extends import_obsidian14.Plugin {
       name: "Start new course",
       callback: () => new TopicInputModal(this.app, this).open()
     });
+    this.addCommand({
+      id: "open-saved-curriculum",
+      name: "Open saved curriculum",
+      callback: () => void this.openSavedCurriculum()
+    });
+  }
+  async openSavedCurriculum() {
+    const courses = await this.cacheService.listCourses();
+    const curricula = [];
+    for (const course of courses) {
+      const stage3 = await this.cacheService.readStage(course.courseId, 3);
+      if (stage3?.curriculum) {
+        curricula.push({
+          ...course,
+          title: stage3.curriculum.title || course.title
+        });
+      }
+    }
+    if (curricula.length === 0) {
+      new import_obsidian15.Notice("No saved curricula found.");
+      return;
+    }
+    new OpenCurriculumModal(this.app, curricula, (course) => {
+      void resumeStage3(this, course.courseId);
+    }).open();
   }
   async checkResume() {
     try {
@@ -7193,7 +7296,7 @@ var DelvePlugin = class extends import_obsidian14.Plugin {
   }
   async handleLoadError(error) {
     console.error("Delve: failed to load", error);
-    new import_obsidian14.Notice(`Delve failed to load: ${error.message}`);
+    new import_obsidian15.Notice(`Delve failed to load: ${error.message}`);
     try {
       await this.app.vault.adapter.write(
         "delve-load-error.md",
