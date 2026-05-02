@@ -35,6 +35,64 @@ export interface RunStage4Options {
   lessonIds?: string[];
 }
 
+export async function createSkeletonNotes(
+  plugin: DelvePlugin,
+  courseId: string
+): Promise<void> {
+  await plugin.lockService.acquire(courseId, 4);
+
+  try {
+    const stage3 = await plugin.cacheService.readStage(courseId, 3);
+    if (!stage3?.curriculum) {
+      throw new Error('Stage 3 (curriculum) must be complete before creating skeleton notes.');
+    }
+
+    const curriculum = stage3.curriculum;
+    const outputs = buildOutputPaths(curriculum);
+    await ensureFolderTree(plugin, outputs);
+
+    const existingCache = (await plugin.cacheService.readStage(courseId, 4)) as Stage4Cache | undefined;
+    const completedLessonIds = new Set(normalizeCompletedLessonIds(existingCache, outputs));
+    const lessonOrder = flattenLessons(curriculum);
+    const totalLessons = lessonOrder.length;
+
+    let skeletonCount = 0;
+    for (const { module, lesson } of lessonOrder) {
+      if (completedLessonIds.has(lesson.lessonId)) continue;
+      await writeSkeletonLesson(plugin, curriculum, outputs, module, lesson);
+      skeletonCount++;
+    }
+
+    await writeSupportingOutputs(plugin, curriculum, outputs);
+
+    const cache: Stage4Cache = {
+      courseId,
+      progress: {
+        totalLessons,
+        completedLessons: existingCache?.progress.completedLessons ?? 0,
+      },
+      outputs,
+      completedLessonIds: existingCache?.completedLessonIds ?? [],
+      generatedLessonSummaries: existingCache?.generatedLessonSummaries ?? {},
+      status: existingCache?.status ?? 'pending',
+      startedAt: existingCache?.startedAt ?? new Date().toISOString(),
+      completedAt: existingCache?.completedAt,
+    };
+    await plugin.cacheService.writeStage(courseId, 4, cache);
+
+    new Notice(
+      skeletonCount === 0
+        ? 'All lessons are already generated — no skeletons needed.'
+        : `Created ${skeletonCount} skeleton note${skeletonCount === 1 ? '' : 's'} in ${outputs.rootDir}.`
+    );
+  } catch (error) {
+    new Notice(`Delve: skeleton creation failed — ${(error as Error).message}`);
+    throw error;
+  } finally {
+    await plugin.lockService.release();
+  }
+}
+
 export async function runStage4(
   plugin: DelvePlugin,
   courseId: string,
@@ -343,6 +401,69 @@ async function writeSupportingOutputs(
     outputs.modulePaths,
     outputs.courseIndexPath
   );
+}
+
+async function writeSkeletonLesson(
+  plugin: DelvePlugin,
+  curriculum: Curriculum,
+  outputs: Stage4OutputPaths,
+  module: ModuleSpec,
+  lesson: LessonSpec
+): Promise<void> {
+  const lessonOrder = flattenLessons(curriculum);
+  const flatLessons = lessonOrder.map(item => item.lesson);
+  const lessonIndex = flatLessons.findIndex(item => item.lessonId === lesson.lessonId);
+  const previous = lessonIndex > 0 ? flatLessons[lessonIndex - 1] : undefined;
+  const next = lessonIndex < flatLessons.length - 1 ? flatLessons[lessonIndex + 1] : undefined;
+  const navigation = buildNavigationLinks(
+    wikiLinkFromPath(outputs.courseIndexPath),
+    wikiLinkFromPath(outputs.modulePaths[module.moduleId]),
+    previous ? wikiLinkFromPath(outputs.lessonPaths[previous.lessonId]) : undefined,
+    next ? wikiLinkFromPath(outputs.lessonPaths[next.lessonId]) : undefined
+  );
+
+  const prereqLines = lesson.prerequisites.length > 0
+    ? lesson.prerequisites.map(prereqId => {
+        const prereq = lessonOrder.find(item => item.lesson.lessonId === prereqId)?.lesson;
+        return `- ${prereq ? prereq.title : prereqId}`;
+      }).join('\n')
+    : '- None';
+
+  const content = [
+    buildFrontmatter({
+      status: 'skeleton',
+      lessonId: lesson.lessonId,
+      moduleId: module.moduleId,
+    }),
+    '',
+    `# ${lesson.title}`,
+    '',
+    navigation.breadcrumbs,
+    '',
+    `> ${lesson.description}`,
+    '',
+    `**Module:** ${module.title}`,
+    '**Prerequisites:**',
+    prereqLines,
+    '',
+    '## Overview',
+    '',
+    '<!-- TODO: Write a concise overview introducing the key concepts of this lesson. -->',
+    '',
+    '## Content',
+    '',
+    '<!-- TODO: Write the main lesson content. Cover the topics described in the lesson description above. -->',
+    '',
+    '## Summary',
+    '',
+    '<!-- TODO: Summarize the key takeaways from this lesson in a few bullet points. -->',
+    '',
+    '---',
+    '',
+    navigation.sequence,
+  ].join('\n');
+
+  await writeMarkdownFile(plugin, outputs.lessonPaths[lesson.lessonId], content);
 }
 
 async function writeLessonOutput(

@@ -6144,6 +6144,52 @@ function buildNavigationLinks(courseIndexLink, moduleLink, previousLessonLink, n
 }
 
 // src/stages/stage4-generate.ts
+async function createSkeletonNotes(plugin, courseId) {
+  await plugin.lockService.acquire(courseId, 4);
+  try {
+    const stage3 = await plugin.cacheService.readStage(courseId, 3);
+    if (!stage3?.curriculum) {
+      throw new Error("Stage 3 (curriculum) must be complete before creating skeleton notes.");
+    }
+    const curriculum = stage3.curriculum;
+    const outputs = buildOutputPaths(curriculum);
+    await ensureFolderTree(plugin, outputs);
+    const existingCache = await plugin.cacheService.readStage(courseId, 4);
+    const completedLessonIds = new Set(normalizeCompletedLessonIds(existingCache, outputs));
+    const lessonOrder = flattenLessons(curriculum);
+    const totalLessons = lessonOrder.length;
+    let skeletonCount = 0;
+    for (const { module: module2, lesson } of lessonOrder) {
+      if (completedLessonIds.has(lesson.lessonId))
+        continue;
+      await writeSkeletonLesson(plugin, curriculum, outputs, module2, lesson);
+      skeletonCount++;
+    }
+    await writeSupportingOutputs(plugin, curriculum, outputs);
+    const cache = {
+      courseId,
+      progress: {
+        totalLessons,
+        completedLessons: existingCache?.progress.completedLessons ?? 0
+      },
+      outputs,
+      completedLessonIds: existingCache?.completedLessonIds ?? [],
+      generatedLessonSummaries: existingCache?.generatedLessonSummaries ?? {},
+      status: existingCache?.status ?? "pending",
+      startedAt: existingCache?.startedAt ?? (/* @__PURE__ */ new Date()).toISOString(),
+      completedAt: existingCache?.completedAt
+    };
+    await plugin.cacheService.writeStage(courseId, 4, cache);
+    new import_obsidian11.Notice(
+      skeletonCount === 0 ? "All lessons are already generated \u2014 no skeletons needed." : `Created ${skeletonCount} skeleton note${skeletonCount === 1 ? "" : "s"} in ${outputs.rootDir}.`
+    );
+  } catch (error) {
+    new import_obsidian11.Notice(`Delve: skeleton creation failed \u2014 ${error.message}`);
+    throw error;
+  } finally {
+    await plugin.lockService.release();
+  }
+}
 async function runStage4(plugin, courseId, options = {}) {
   await plugin.lockService.acquire(courseId, 4);
   try {
@@ -6401,6 +6447,57 @@ async function writeSupportingOutputs(plugin, curriculum, outputs) {
     outputs.courseIndexPath
   );
 }
+async function writeSkeletonLesson(plugin, curriculum, outputs, module2, lesson) {
+  const lessonOrder = flattenLessons(curriculum);
+  const flatLessons = lessonOrder.map((item) => item.lesson);
+  const lessonIndex = flatLessons.findIndex((item) => item.lessonId === lesson.lessonId);
+  const previous = lessonIndex > 0 ? flatLessons[lessonIndex - 1] : void 0;
+  const next = lessonIndex < flatLessons.length - 1 ? flatLessons[lessonIndex + 1] : void 0;
+  const navigation = buildNavigationLinks(
+    wikiLinkFromPath(outputs.courseIndexPath),
+    wikiLinkFromPath(outputs.modulePaths[module2.moduleId]),
+    previous ? wikiLinkFromPath(outputs.lessonPaths[previous.lessonId]) : void 0,
+    next ? wikiLinkFromPath(outputs.lessonPaths[next.lessonId]) : void 0
+  );
+  const prereqLines = lesson.prerequisites.length > 0 ? lesson.prerequisites.map((prereqId) => {
+    const prereq = lessonOrder.find((item) => item.lesson.lessonId === prereqId)?.lesson;
+    return `- ${prereq ? prereq.title : prereqId}`;
+  }).join("\n") : "- None";
+  const content = [
+    buildFrontmatter({
+      status: "skeleton",
+      lessonId: lesson.lessonId,
+      moduleId: module2.moduleId
+    }),
+    "",
+    `# ${lesson.title}`,
+    "",
+    navigation.breadcrumbs,
+    "",
+    `> ${lesson.description}`,
+    "",
+    `**Module:** ${module2.title}`,
+    "**Prerequisites:**",
+    prereqLines,
+    "",
+    "## Overview",
+    "",
+    "<!-- TODO: Write a concise overview introducing the key concepts of this lesson. -->",
+    "",
+    "## Content",
+    "",
+    "<!-- TODO: Write the main lesson content. Cover the topics described in the lesson description above. -->",
+    "",
+    "## Summary",
+    "",
+    "<!-- TODO: Summarize the key takeaways from this lesson in a few bullet points. -->",
+    "",
+    "---",
+    "",
+    navigation.sequence
+  ].join("\n");
+  await writeMarkdownFile(plugin, outputs.lessonPaths[lesson.lessonId], content);
+}
 async function writeLessonOutput(plugin, curriculum, outputs, module2, lesson, draft, mode, renderedPrompt, promptMeta) {
   const lessonOrder = flattenLessons(curriculum);
   const flatLessons = lessonOrder.map((item) => item.lesson);
@@ -6614,6 +6711,7 @@ var SyllabusEditorView = class extends import_obsidian12.ItemView {
     __publicField(this, "saving", false);
     __publicField(this, "dirty", false);
     __publicField(this, "generatingLessons", false);
+    __publicField(this, "creatingSkeletons", false);
     __publicField(this, "selectedLessonIds", /* @__PURE__ */ new Set());
   }
   getViewType() {
@@ -6630,6 +6728,7 @@ var SyllabusEditorView = class extends import_obsidian12.ItemView {
     this.saving = false;
     this.dirty = false;
     this.generatingLessons = false;
+    this.creatingSkeletons = false;
     this.selectedLessonIds = /* @__PURE__ */ new Set();
     await this.render();
   }
@@ -6790,6 +6889,8 @@ var SyllabusEditorView = class extends import_obsidian12.ItemView {
     const status = footer.createDiv("delve-syllabus__status");
     if (this.saving) {
       status.textContent = "Saving syllabus draft\u2026";
+    } else if (this.creatingSkeletons) {
+      status.textContent = "Creating skeleton notes\u2026";
     } else if (this.generatingLessons) {
       status.textContent = remainingLessons > 0 ? `Generating lesson ${completedLessons + 1} of ${lessonCount}\u2026` : "Wrapping up lesson generation\u2026";
     } else if (this.dirty) {
@@ -6806,7 +6907,7 @@ var SyllabusEditorView = class extends import_obsidian12.ItemView {
       text: "Select all",
       cls: "delve-taxonomy__action-btn"
     });
-    selectAllBtn.disabled = this.saving || this.generatingLessons || remainingLessons === 0;
+    selectAllBtn.disabled = this.saving || this.generatingLessons || this.creatingSkeletons || remainingLessons === 0;
     selectAllBtn.addEventListener("click", async () => {
       this.selectAllRemainingLessons(completedLessonIds);
       await this.render();
@@ -6815,7 +6916,7 @@ var SyllabusEditorView = class extends import_obsidian12.ItemView {
       text: "Select none",
       cls: "delve-taxonomy__action-btn"
     });
-    selectNoneBtn.disabled = this.saving || this.generatingLessons || selectedPendingLessonCount === 0;
+    selectNoneBtn.disabled = this.saving || this.generatingLessons || this.creatingSkeletons || selectedPendingLessonCount === 0;
     selectNoneBtn.addEventListener("click", async () => {
       this.selectedLessonIds.clear();
       await this.render();
@@ -6824,14 +6925,20 @@ var SyllabusEditorView = class extends import_obsidian12.ItemView {
       text: "Regenerate draft",
       cls: "delve-taxonomy__action-btn"
     });
-    regenerateBtn.disabled = this.saving || this.generatingLessons;
+    regenerateBtn.disabled = this.saving || this.generatingLessons || this.creatingSkeletons;
     regenerateBtn.addEventListener("click", () => void this.handleRegenerate());
     const saveBtn = actions.createEl("button", {
       text: this.saving ? "Saving\u2026" : "Save draft",
       cls: "delve-taxonomy__action-btn delve-syllabus__save"
     });
-    saveBtn.disabled = this.saving || this.generatingLessons || !this.dirty;
+    saveBtn.disabled = this.saving || this.generatingLessons || this.creatingSkeletons || !this.dirty;
     saveBtn.addEventListener("click", () => void this.handleSaveDraft());
+    const skeletonBtn = actions.createEl("button", {
+      text: this.creatingSkeletons ? "Creating skeletons\u2026" : "Create skeleton notes",
+      cls: "delve-taxonomy__action-btn"
+    });
+    skeletonBtn.disabled = this.saving || this.generatingLessons || this.creatingSkeletons || Boolean(this.state.loading) || lessonCount === 0;
+    skeletonBtn.addEventListener("click", () => void this.handleCreateSkeletonNotes());
     const finalizeBtn = actions.createEl("button", {
       text: getGenerateButtonLabel(
         this.generatingLessons,
@@ -6841,7 +6948,7 @@ var SyllabusEditorView = class extends import_obsidian12.ItemView {
       ),
       cls: "mod-cta delve-btn-primary delve-syllabus__finalize"
     });
-    finalizeBtn.disabled = this.saving || this.generatingLessons || Boolean(this.state.loading) || generationComplete;
+    finalizeBtn.disabled = this.saving || this.generatingLessons || this.creatingSkeletons || Boolean(this.state.loading) || generationComplete;
     finalizeBtn.addEventListener("click", () => void this.handleGenerateLessons());
   }
   renderField(parent, label, value, onInput) {
@@ -6916,6 +7023,27 @@ var SyllabusEditorView = class extends import_obsidian12.ItemView {
       new import_obsidian12.Notice(`Could not generate lessons: ${e.message}`);
     } finally {
       this.generatingLessons = false;
+      await this.render();
+    }
+  }
+  async handleCreateSkeletonNotes() {
+    const courseId = await this.ensureCourseId();
+    if (!courseId) {
+      new import_obsidian12.Notice("This curriculum tab is missing its course id. Reopen it from the assessment view.");
+      return;
+    }
+    if (this.creatingSkeletons)
+      return;
+    this.creatingSkeletons = true;
+    await this.render();
+    try {
+      await this.writeCurrentStage3(courseId);
+      this.dirty = false;
+      await createSkeletonNotes(this.plugin, courseId);
+    } catch (e) {
+      new import_obsidian12.Notice(`Could not create skeleton notes: ${e.message}`);
+    } finally {
+      this.creatingSkeletons = false;
       await this.render();
     }
   }
