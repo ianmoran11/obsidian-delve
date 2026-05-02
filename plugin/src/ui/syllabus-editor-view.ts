@@ -5,7 +5,7 @@ import type { Curriculum, Stage0Cache, Stage3Cache, Stage4Cache } from '../inter
 import type { SourceMode } from '../services/context';
 import { SYLLABUS_VIEW_TYPE } from '../constants';
 import { runStage3 } from '../stages/stage3-curriculum';
-import { runStage4 } from '../stages/stage4-generate';
+import { createSkeletonNotes, runStage4 } from '../stages/stage4-generate';
 
 export interface SyllabusEditorViewState extends Record<string, unknown> {
   courseId: string;
@@ -30,6 +30,7 @@ export class SyllabusEditorView extends ItemView {
   private saving = false;
   private dirty = false;
   private generatingLessons = false;
+  private creatingSkeletons = false;
   private selectedLessonIds = new Set<string>();
 
   constructor(leaf: WorkspaceLeaf, private plugin: DelvePlugin) {
@@ -54,6 +55,7 @@ export class SyllabusEditorView extends ItemView {
     this.saving = false;
     this.dirty = false;
     this.generatingLessons = false;
+    this.creatingSkeletons = false;
     this.selectedLessonIds = new Set<string>();
     await this.render();
   }
@@ -232,6 +234,8 @@ export class SyllabusEditorView extends ItemView {
     const status = footer.createDiv('delve-syllabus__status');
     if (this.saving) {
       status.textContent = 'Saving syllabus draft…';
+    } else if (this.creatingSkeletons) {
+      status.textContent = 'Creating skeleton notes…';
     } else if (this.generatingLessons) {
       status.textContent = remainingLessons > 0
         ? `Generating lesson ${completedLessons + 1} of ${lessonCount}…`
@@ -251,7 +255,7 @@ export class SyllabusEditorView extends ItemView {
       text: 'Select all',
       cls: 'delve-taxonomy__action-btn',
     }) as HTMLButtonElement;
-    selectAllBtn.disabled = this.saving || this.generatingLessons || remainingLessons === 0;
+    selectAllBtn.disabled = this.saving || this.generatingLessons || this.creatingSkeletons || remainingLessons === 0;
     selectAllBtn.addEventListener('click', async () => {
       this.selectAllRemainingLessons(completedLessonIds);
       await this.render();
@@ -261,7 +265,7 @@ export class SyllabusEditorView extends ItemView {
       text: 'Select none',
       cls: 'delve-taxonomy__action-btn',
     }) as HTMLButtonElement;
-    selectNoneBtn.disabled = this.saving || this.generatingLessons || selectedPendingLessonCount === 0;
+    selectNoneBtn.disabled = this.saving || this.generatingLessons || this.creatingSkeletons || selectedPendingLessonCount === 0;
     selectNoneBtn.addEventListener('click', async () => {
       this.selectedLessonIds.clear();
       await this.render();
@@ -271,15 +275,22 @@ export class SyllabusEditorView extends ItemView {
       text: 'Regenerate draft',
       cls: 'delve-taxonomy__action-btn',
     }) as HTMLButtonElement;
-    regenerateBtn.disabled = this.saving || this.generatingLessons;
+    regenerateBtn.disabled = this.saving || this.generatingLessons || this.creatingSkeletons;
     regenerateBtn.addEventListener('click', () => void this.handleRegenerate());
 
     const saveBtn = actions.createEl('button', {
       text: this.saving ? 'Saving…' : 'Save draft',
       cls: 'delve-taxonomy__action-btn delve-syllabus__save',
     }) as HTMLButtonElement;
-    saveBtn.disabled = this.saving || this.generatingLessons || !this.dirty;
+    saveBtn.disabled = this.saving || this.generatingLessons || this.creatingSkeletons || !this.dirty;
     saveBtn.addEventListener('click', () => void this.handleSaveDraft());
+
+    const skeletonBtn = actions.createEl('button', {
+      text: this.creatingSkeletons ? 'Creating skeletons…' : 'Create skeleton notes',
+      cls: 'delve-taxonomy__action-btn',
+    }) as HTMLButtonElement;
+    skeletonBtn.disabled = this.saving || this.generatingLessons || this.creatingSkeletons || Boolean(this.state.loading) || lessonCount === 0;
+    skeletonBtn.addEventListener('click', () => void this.handleCreateSkeletonNotes());
 
     const finalizeBtn = actions.createEl('button', {
       text: getGenerateButtonLabel(
@@ -290,7 +301,7 @@ export class SyllabusEditorView extends ItemView {
       ),
       cls: 'mod-cta delve-btn-primary delve-syllabus__finalize',
     }) as HTMLButtonElement;
-    finalizeBtn.disabled = this.saving || this.generatingLessons || Boolean(this.state.loading) || generationComplete;
+    finalizeBtn.disabled = this.saving || this.generatingLessons || this.creatingSkeletons || Boolean(this.state.loading) || generationComplete;
     finalizeBtn.addEventListener('click', () => void this.handleGenerateLessons());
   }
 
@@ -379,6 +390,27 @@ export class SyllabusEditorView extends ItemView {
       new Notice(`Could not generate lessons: ${(e as Error).message}`);
     } finally {
       this.generatingLessons = false;
+      await this.render();
+    }
+  }
+
+  private async handleCreateSkeletonNotes(): Promise<void> {
+    const courseId = await this.ensureCourseId();
+    if (!courseId) {
+      new Notice('This curriculum tab is missing its course id. Reopen it from the assessment view.');
+      return;
+    }
+    if (this.creatingSkeletons) return;
+    this.creatingSkeletons = true;
+    await this.render();
+    try {
+      await this.writeCurrentStage3(courseId);
+      this.dirty = false;
+      await createSkeletonNotes(this.plugin, courseId);
+    } catch (e) {
+      new Notice(`Could not create skeleton notes: ${(e as Error).message}`);
+    } finally {
+      this.creatingSkeletons = false;
       await this.render();
     }
   }
