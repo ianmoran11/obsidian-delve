@@ -12,6 +12,7 @@ import type {
   Stage3Cache,
   Stage4Cache,
 } from '../interfaces';
+import { VAULT_PATHS } from '../constants';
 
 type StageDataMap = {
   0: Stage0Cache;
@@ -97,8 +98,20 @@ export class CacheService {
       ...Object.keys(data.meta),
     ]);
 
-    return [...courseIds]
-      .map(courseId => this.deriveCourseSummary(courseId, data.courses[courseId], data.meta[courseId]))
+    const summaries = new Map(
+      [...courseIds].map(courseId => [
+        courseId,
+        this.deriveCourseSummary(courseId, data.courses[courseId], data.meta[courseId]),
+      ])
+    );
+
+    for (const summary of await this.discoverGeneratedCourseSummaries()) {
+      if (!summaries.has(summary.courseId)) {
+        summaries.set(summary.courseId, summary);
+      }
+    }
+
+    return [...summaries.values()]
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }
 
@@ -142,7 +155,101 @@ export class CacheService {
       remainingLessonIds: allLessonIds.filter(lessonId => !completedLessonIds.has(lessonId)),
       outputRootPath: course?.[4]?.outputs?.rootDir,
       courseIndexPath: course?.[4]?.outputs?.courseIndexPath,
+      hasStage3Cache: Boolean(course?.[3]?.curriculum),
     };
+  }
+
+  private async discoverGeneratedCourseSummaries(): Promise<CourseSummary[]> {
+    const adapter = this.plugin.app?.vault?.adapter;
+    if (!adapter) return [];
+    if (!('list' in adapter)) return [];
+
+    let courseFolders: string[];
+    try {
+      const listing = await adapter.list(VAULT_PATHS.CURRICULUM);
+      courseFolders = listing.folders;
+    } catch {
+      return [];
+    }
+
+    const summaries = await Promise.all(
+      courseFolders.map(folder => this.discoverGeneratedCourseSummary(folder))
+    );
+    return summaries.filter((summary): summary is CourseSummary => Boolean(summary));
+  }
+
+  private async discoverGeneratedCourseSummary(folder: string): Promise<CourseSummary | undefined> {
+    const adapter = this.plugin.app.vault.adapter;
+    const courseIndexPath = `${folder}/Course Index.md`;
+    if (!(await this.adapterExists(courseIndexPath))) return undefined;
+
+    const markdownFiles = await this.listMarkdownFiles(folder);
+    const lessonPaths = markdownFiles.filter(path => !isGeneratedCourseSupportFile(path));
+    const title = await this.readGeneratedCourseTitle(courseIndexPath, folder);
+    const updatedAt = await this.deriveGeneratedCourseUpdatedAt([courseIndexPath, ...lessonPaths]);
+
+    return {
+      courseId: folder.split('/').pop() ?? folder,
+      title,
+      createdAt: updatedAt,
+      updatedAt,
+      currentStage: 4,
+      stageLabel: 'Lessons',
+      stageStatus: 'complete',
+      totalLessons: lessonPaths.length,
+      completedLessons: lessonPaths.length,
+      remainingLessonIds: [],
+      outputRootPath: folder,
+      courseIndexPath,
+      hasStage3Cache: false,
+    };
+  }
+
+  private async listMarkdownFiles(folder: string): Promise<string[]> {
+    const adapter = this.plugin.app.vault.adapter;
+    const listing = await adapter.list(folder);
+    const nested = await Promise.all(listing.folders.map(child => this.listMarkdownFiles(child)));
+    return [
+      ...listing.files.filter(path => path.endsWith('.md')),
+      ...nested.flat(),
+    ];
+  }
+
+  private async readGeneratedCourseTitle(courseIndexPath: string, folder: string): Promise<string> {
+    try {
+      const content = await this.plugin.app.vault.adapter.read(courseIndexPath);
+      const heading = content.split('\n')
+        .map(line => line.match(/^#\s+(.+)$/)?.[1]?.trim())
+        .find(Boolean);
+      if (heading) return heading;
+    } catch {
+      // Fall back to the folder name below.
+    }
+    return this.readableCourseId(folder.split('/').pop() ?? folder);
+  }
+
+  private async deriveGeneratedCourseUpdatedAt(paths: string[]): Promise<string> {
+    const stats = await Promise.all(paths.map(path => this.adapterMtime(path)));
+    const latest = Math.max(0, ...stats.filter((mtime): mtime is number => typeof mtime === 'number'));
+    return latest > 0 ? new Date(latest).toISOString() : new Date(0).toISOString();
+  }
+
+  private async adapterExists(path: string): Promise<boolean> {
+    try {
+      return await this.plugin.app.vault.adapter.exists(path);
+    } catch {
+      return false;
+    }
+  }
+
+  private async adapterMtime(path: string): Promise<number | undefined> {
+    const adapter = this.plugin.app.vault.adapter;
+    if (!('stat' in adapter)) return undefined;
+    try {
+      return (await adapter.stat(path))?.mtime;
+    } catch {
+      return undefined;
+    }
   }
 
   private deriveCurrentStage(course?: StageCache): StageId {
@@ -192,4 +299,9 @@ export class CacheService {
       .replace(/[-_]+/g, ' ')
       .replace(/\b\w/g, char => char.toUpperCase());
   }
+}
+
+function isGeneratedCourseSupportFile(path: string): boolean {
+  const name = path.split('/').pop();
+  return name === 'Course Index.md' || name === 'Module MOC.md';
 }

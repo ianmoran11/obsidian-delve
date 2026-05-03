@@ -7,3 +7,4 @@ Completed task 1: Delve: add bases home page.
 - Built the plugin and copied the built artifacts into the active `engram` vault for manual verification.
 - Verified in Obsidian using Computer Use that `Delve: Open Delve home` appears in the command palette and opens the new home dashboard.
 - Bumped the plugin release metadata to `0.1.6` so BRAT can register the update from `manifest.json` and `versions.json`.
+- Added generated-course discovery for existing `4-Curriculum/*/Course Index.md` folders and bumped the plugin release metadata to `0.1.7`.

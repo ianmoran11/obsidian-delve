@@ -141,6 +141,7 @@ export interface CourseSummary {
   remainingLessonIds: string[];
   outputRootPath?: string;
   courseIndexPath?: string;
+  hasStage3Cache: boolean;
 }
 
 export interface PluginData {

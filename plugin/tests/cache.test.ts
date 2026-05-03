@@ -158,6 +158,7 @@ describe('cache: listCourseSummaries', () => {
         remainingLessonIds: ['l2'],
         outputRootPath: '4-Curriculum/Music Theory',
         courseIndexPath: '4-Curriculum/Music Theory/Course Index.md',
+        hasStage3Cache: true,
       },
       {
         courseId: 'stage-zero',
@@ -166,6 +167,67 @@ describe('cache: listCourseSummaries', () => {
         stageLabel: 'Taxonomy',
         totalLessons: 0,
         completedLessons: 0,
+        hasStage3Cache: false,
+      },
+    ]);
+  });
+
+  it('discovers generated courses from the curriculum folder when cache data is absent', async () => {
+    const data: PluginData = {
+      courses: {},
+      meta: {},
+    };
+    const files = new Map<string, string>([
+      [
+        '4-Curriculum/generated-course/Course Index.md',
+        '# Generated Course\n\n## Modules\n\n- [[Module MOC]]\n  - [[lesson-one]]\n',
+      ],
+      ['4-Curriculum/generated-course/module-a/Module MOC.md', '# Module A'],
+      ['4-Curriculum/generated-course/module-a/lesson-one.md', '# Lesson One'],
+      ['4-Curriculum/generated-course/module-a/lesson-two.md', '# Lesson Two'],
+    ]);
+    const folders = new Map<string, string[]>([
+      ['4-Curriculum', ['4-Curriculum/generated-course']],
+      ['4-Curriculum/generated-course', ['4-Curriculum/generated-course/module-a']],
+      ['4-Curriculum/generated-course/module-a', []],
+    ]);
+
+    const plugin = {
+      loadData: vi.fn(async () => data),
+      saveData: vi.fn(async () => {}),
+      app: {
+        vault: {
+          adapter: {
+            exists: vi.fn(async (path: string) => files.has(path)),
+            read: vi.fn(async (path: string) => files.get(path) ?? ''),
+            stat: vi.fn(async (path: string) => ({ mtime: path.includes('lesson-two') ? 2000 : 1000 })),
+            list: vi.fn(async (path: string) => ({
+              files: [...files.keys()].filter(file => file.startsWith(`${path}/`) && !file.slice(path.length + 1).includes('/')),
+              folders: folders.get(path) ?? [],
+            })),
+          },
+        },
+      },
+    };
+
+    const cache = new CacheService(plugin as never);
+    const summaries = await cache.listCourseSummaries();
+
+    expect(summaries).toEqual([
+      {
+        courseId: 'generated-course',
+        title: 'Generated Course',
+        createdAt: '1970-01-01T00:00:02.000Z',
+        updatedAt: '1970-01-01T00:00:02.000Z',
+        currentStage: 4,
+        stageLabel: 'Lessons',
+        stageStatus: 'complete',
+        totalLessons: 2,
+        completedLessons: 2,
+        remainingLessonIds: [],
+        outputRootPath: '4-Curriculum/generated-course',
+        courseIndexPath: '4-Curriculum/generated-course/Course Index.md',
+        hasStage3Cache: false,
       },
     ]);
   });

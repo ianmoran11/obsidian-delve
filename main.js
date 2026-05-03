@@ -636,7 +636,18 @@ var CacheService = class {
       ...Object.keys(data.courses),
       ...Object.keys(data.meta)
     ]);
-    return [...courseIds].map((courseId) => this.deriveCourseSummary(courseId, data.courses[courseId], data.meta[courseId])).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    const summaries = new Map(
+      [...courseIds].map((courseId) => [
+        courseId,
+        this.deriveCourseSummary(courseId, data.courses[courseId], data.meta[courseId])
+      ])
+    );
+    for (const summary of await this.discoverGeneratedCourseSummaries()) {
+      if (!summaries.has(summary.courseId)) {
+        summaries.set(summary.courseId, summary);
+      }
+    }
+    return [...summaries.values()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }
   async clearCourse(courseId) {
     const data = await this.readAll();
@@ -667,8 +678,93 @@ var CacheService = class {
       completedLessons,
       remainingLessonIds: allLessonIds.filter((lessonId) => !completedLessonIds.has(lessonId)),
       outputRootPath: course?.[4]?.outputs?.rootDir,
-      courseIndexPath: course?.[4]?.outputs?.courseIndexPath
+      courseIndexPath: course?.[4]?.outputs?.courseIndexPath,
+      hasStage3Cache: Boolean(course?.[3]?.curriculum)
     };
+  }
+  async discoverGeneratedCourseSummaries() {
+    const adapter = this.plugin.app?.vault?.adapter;
+    if (!adapter)
+      return [];
+    if (!("list" in adapter))
+      return [];
+    let courseFolders;
+    try {
+      const listing = await adapter.list(VAULT_PATHS.CURRICULUM);
+      courseFolders = listing.folders;
+    } catch {
+      return [];
+    }
+    const summaries = await Promise.all(
+      courseFolders.map((folder) => this.discoverGeneratedCourseSummary(folder))
+    );
+    return summaries.filter((summary) => Boolean(summary));
+  }
+  async discoverGeneratedCourseSummary(folder) {
+    const adapter = this.plugin.app.vault.adapter;
+    const courseIndexPath = `${folder}/Course Index.md`;
+    if (!await this.adapterExists(courseIndexPath))
+      return void 0;
+    const markdownFiles = await this.listMarkdownFiles(folder);
+    const lessonPaths = markdownFiles.filter((path) => !isGeneratedCourseSupportFile(path));
+    const title = await this.readGeneratedCourseTitle(courseIndexPath, folder);
+    const updatedAt = await this.deriveGeneratedCourseUpdatedAt([courseIndexPath, ...lessonPaths]);
+    return {
+      courseId: folder.split("/").pop() ?? folder,
+      title,
+      createdAt: updatedAt,
+      updatedAt,
+      currentStage: 4,
+      stageLabel: "Lessons",
+      stageStatus: "complete",
+      totalLessons: lessonPaths.length,
+      completedLessons: lessonPaths.length,
+      remainingLessonIds: [],
+      outputRootPath: folder,
+      courseIndexPath,
+      hasStage3Cache: false
+    };
+  }
+  async listMarkdownFiles(folder) {
+    const adapter = this.plugin.app.vault.adapter;
+    const listing = await adapter.list(folder);
+    const nested = await Promise.all(listing.folders.map((child) => this.listMarkdownFiles(child)));
+    return [
+      ...listing.files.filter((path) => path.endsWith(".md")),
+      ...nested.flat()
+    ];
+  }
+  async readGeneratedCourseTitle(courseIndexPath, folder) {
+    try {
+      const content = await this.plugin.app.vault.adapter.read(courseIndexPath);
+      const heading = content.split("\n").map((line) => line.match(/^#\s+(.+)$/)?.[1]?.trim()).find(Boolean);
+      if (heading)
+        return heading;
+    } catch {
+    }
+    return this.readableCourseId(folder.split("/").pop() ?? folder);
+  }
+  async deriveGeneratedCourseUpdatedAt(paths) {
+    const stats = await Promise.all(paths.map((path) => this.adapterMtime(path)));
+    const latest = Math.max(0, ...stats.filter((mtime) => typeof mtime === "number"));
+    return latest > 0 ? new Date(latest).toISOString() : (/* @__PURE__ */ new Date(0)).toISOString();
+  }
+  async adapterExists(path) {
+    try {
+      return await this.plugin.app.vault.adapter.exists(path);
+    } catch {
+      return false;
+    }
+  }
+  async adapterMtime(path) {
+    const adapter = this.plugin.app.vault.adapter;
+    if (!("stat" in adapter))
+      return void 0;
+    try {
+      return (await adapter.stat(path))?.mtime;
+    } catch {
+      return void 0;
+    }
   }
   deriveCurrentStage(course) {
     for (const stage of [4, 3, 2, 1, 0]) {
@@ -703,6 +799,10 @@ var CacheService = class {
     return courseId.replace(/[-_]+/g, " ").replace(/\b\w/g, (char) => char.toUpperCase());
   }
 };
+function isGeneratedCourseSupportFile(path) {
+  const name = path.split("/").pop();
+  return name === "Course Index.md" || name === "Module MOC.md";
+}
 
 // src/services/lock.ts
 var LockService = class {
@@ -7322,7 +7422,7 @@ var HomeView = class extends import_obsidian13.ItemView {
     fill.style.width = `${getProgressPercent(summary)}%`;
     const tileActions = tile.createDiv("delve-home__tile-actions");
     const resumeBtn = tileActions.createEl("button", {
-      text: summary.currentStage >= 3 ? "Open curriculum" : "Resume",
+      text: summary.hasStage3Cache ? summary.currentStage >= 3 ? "Open curriculum" : "Resume" : "Open index",
       cls: "mod-cta delve-btn-primary delve-home__tile-primary"
     });
     resumeBtn.addEventListener("click", () => void this.openCourse(summary));
@@ -7338,7 +7438,7 @@ var HomeView = class extends import_obsidian13.ItemView {
     });
     remainingBtn.disabled = summary.remainingLessonIds.length === 0;
     remainingBtn.addEventListener("click", () => void this.generateLessons(summary, "remaining"));
-    if (summary.courseIndexPath) {
+    if (summary.courseIndexPath && summary.hasStage3Cache) {
       const openIndexBtn = tileActions.createEl("button", {
         text: "Open index",
         cls: "delve-taxonomy__action-btn"
@@ -7347,8 +7447,12 @@ var HomeView = class extends import_obsidian13.ItemView {
     }
   }
   async openCourse(summary) {
-    if (summary.currentStage >= 3) {
+    if (summary.hasStage3Cache && summary.currentStage >= 3) {
       await resumeStage3(this.plugin, summary.courseId);
+      return;
+    }
+    if (summary.courseIndexPath) {
+      await this.openCourseIndex(summary);
       return;
     }
     new import_obsidian13.Notice("Resume this course from the command palette once its curriculum has been drafted.");

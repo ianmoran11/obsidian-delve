@@ -109,7 +109,9 @@ export class HomeView extends ItemView {
 
     const tileActions = tile.createDiv('delve-home__tile-actions');
     const resumeBtn = tileActions.createEl('button', {
-      text: summary.currentStage >= 3 ? 'Open curriculum' : 'Resume',
+      text: summary.hasStage3Cache
+        ? summary.currentStage >= 3 ? 'Open curriculum' : 'Resume'
+        : 'Open index',
       cls: 'mod-cta delve-btn-primary delve-home__tile-primary',
     }) as HTMLButtonElement;
     resumeBtn.addEventListener('click', () => void this.openCourse(summary));
@@ -128,7 +130,7 @@ export class HomeView extends ItemView {
     remainingBtn.disabled = summary.remainingLessonIds.length === 0;
     remainingBtn.addEventListener('click', () => void this.generateLessons(summary, 'remaining'));
 
-    if (summary.courseIndexPath) {
+    if (summary.courseIndexPath && summary.hasStage3Cache) {
       const openIndexBtn = tileActions.createEl('button', {
         text: 'Open index',
         cls: 'delve-taxonomy__action-btn',
@@ -138,8 +140,12 @@ export class HomeView extends ItemView {
   }
 
   private async openCourse(summary: CourseSummary): Promise<void> {
-    if (summary.currentStage >= 3) {
+    if (summary.hasStage3Cache && summary.currentStage >= 3) {
       await resumeStage3(this.plugin, summary.courseId);
+      return;
+    }
+    if (summary.courseIndexPath) {
+      await this.openCourseIndex(summary);
       return;
     }
     new Notice('Resume this course from the command palette once its curriculum has been drafted.');
