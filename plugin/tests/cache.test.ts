@@ -70,3 +70,103 @@ describe('cache: listCourses', () => {
     ]);
   });
 });
+
+describe('cache: listCourseSummaries', () => {
+  it('derives stage and lesson progress for dashboard tiles', async () => {
+    const data: PluginData = {
+      courses: {
+        'stage-zero': {
+          0: {
+            courseId: 'stage-zero',
+            seedTopic: 'Rhetoric',
+            taxonomy: [],
+            selectedScope: [],
+            scopeSummary: 'Rhetoric',
+            status: 'pending',
+            startedAt: '2026-04-20T10:00:00.000Z',
+          },
+        },
+        'partial-lessons': {
+          0: {
+            courseId: 'partial-lessons',
+            seedTopic: 'Music theory',
+            taxonomy: [],
+            selectedScope: [],
+            scopeSummary: 'Music theory',
+            status: 'complete',
+            startedAt: '2026-04-21T10:00:00.000Z',
+          },
+          3: {
+            courseId: 'partial-lessons',
+            curriculum: {
+              courseId: 'partial-lessons',
+              title: 'Music Theory',
+              modules: [
+                {
+                  moduleId: 'm1',
+                  title: 'Foundations',
+                  description: 'Basics',
+                  lessons: [
+                    { lessonId: 'l1', title: 'Pitch', description: 'Pitch', prerequisites: [] },
+                    { lessonId: 'l2', title: 'Rhythm', description: 'Rhythm', prerequisites: [] },
+                  ],
+                },
+              ],
+            },
+            status: 'complete',
+            completedAt: '2026-04-21T10:30:00.000Z',
+          },
+          4: {
+            courseId: 'partial-lessons',
+            progress: {
+              totalLessons: 2,
+              completedLessons: 1,
+            },
+            outputs: {
+              rootDir: '4-Curriculum/Music Theory',
+              courseIndexPath: '4-Curriculum/Music Theory/Course Index.md',
+              canvasPath: '4-Curriculum/Music Theory/Course.canvas',
+              modulePaths: {},
+              lessonPaths: {},
+            },
+            completedLessonIds: ['l1'],
+            status: 'pending',
+            startedAt: '2026-04-21T11:00:00.000Z',
+          },
+        },
+      },
+      meta: {},
+    };
+
+    const plugin = {
+      loadData: vi.fn(async () => data),
+      saveData: vi.fn(async () => {}),
+    };
+
+    const cache = new CacheService(plugin as never);
+    const summaries = await cache.listCourseSummaries();
+
+    expect(summaries).toMatchObject([
+      {
+        courseId: 'partial-lessons',
+        title: 'Music Theory',
+        currentStage: 4,
+        stageLabel: 'Lessons',
+        stageStatus: 'pending',
+        totalLessons: 2,
+        completedLessons: 1,
+        remainingLessonIds: ['l2'],
+        outputRootPath: '4-Curriculum/Music Theory',
+        courseIndexPath: '4-Curriculum/Music Theory/Course Index.md',
+      },
+      {
+        courseId: 'stage-zero',
+        title: 'Rhetoric',
+        currentStage: 0,
+        stageLabel: 'Taxonomy',
+        totalLessons: 0,
+        completedLessons: 0,
+      },
+    ]);
+  });
+});

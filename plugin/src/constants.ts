@@ -18,3 +18,4 @@ export const CONCEPTS_VIEW_TYPE = 'delve-concepts-view';
 export const DIAGNOSTIC_VIEW_TYPE = 'delve-diagnostic-view';
 export const PROGRESS_VIEW_TYPE = 'delve-progress-view';
 export const SYLLABUS_VIEW_TYPE = 'delve-syllabus-editor-view';
+export const HOME_VIEW_TYPE = 'delve-home-view';

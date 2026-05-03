@@ -14,6 +14,135 @@
   cursor: pointer;
 }
 
+/* ── Home view ── */
+.delve-home {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+.delve-home__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 16px 10px;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+.delve-home__title-block h2 {
+  margin: 0;
+}
+.delve-home__subtitle {
+  color: var(--text-muted);
+  font-size: 0.9em;
+  margin: 2px 0 0;
+}
+.delve-home__header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.delve-home__new-course {
+  min-height: 36px;
+  padding: 6px 14px;
+}
+.delve-home__body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+}
+.delve-home__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+}
+.delve-home__tile {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 190px;
+  padding: 14px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-secondary);
+}
+.delve-home__tile-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+.delve-home__course-title {
+  margin: 0;
+  font-size: 1.05em;
+  line-height: 1.3;
+}
+.delve-home__badge {
+  flex-shrink: 0;
+  padding: 2px 8px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 999px;
+  font-size: 0.74em;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.delve-home__badge--complete {
+  color: var(--color-green, #4caf50);
+}
+.delve-home__badge--pending {
+  color: var(--text-muted);
+}
+.delve-home__meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: var(--text-muted);
+  font-size: 0.82em;
+  overflow-wrap: anywhere;
+}
+.delve-home__progress-label {
+  color: var(--text-normal);
+  font-size: 0.88em;
+  margin-top: auto;
+}
+.delve-home__progress {
+  height: 8px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--background-modifier-border);
+}
+.delve-home__progress-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--interactive-accent);
+}
+.delve-home__tile-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.delve-home__tile-primary {
+  min-height: 34px;
+  padding: 5px 12px;
+}
+.delve-home__empty {
+  max-width: 420px;
+  padding: 18px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-secondary);
+}
+.delve-home__empty h3 {
+  margin: 0 0 6px;
+}
+.delve-home__empty p {
+  margin: 0;
+  color: var(--text-muted);
+}
+
 /* ── Topic input modal ── */
 .delve-topic-input .modal-content { padding: 24px; }
 .delve-topic-input__field { width: 100%; min-height: 44px; font-size: 1em; }

@@ -2,7 +2,9 @@ import type DelvePlugin from '../../main';
 import type {
   CourseId,
   CourseMeta,
+  CourseSummary,
   PluginData,
+  StageId,
   StageCache,
   Stage0Cache,
   Stage1Cache,
@@ -88,6 +90,18 @@ export class CacheService {
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
 
+  async listCourseSummaries(): Promise<CourseSummary[]> {
+    const data = await this.readAll();
+    const courseIds = new Set([
+      ...Object.keys(data.courses),
+      ...Object.keys(data.meta),
+    ]);
+
+    return [...courseIds]
+      .map(courseId => this.deriveCourseSummary(courseId, data.courses[courseId], data.meta[courseId]))
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  }
+
   async clearCourse(courseId: CourseId): Promise<void> {
     const data = await this.readAll();
     delete data.courses[courseId];
@@ -101,6 +115,56 @@ export class CacheService {
       || this.readableCourseId(courseId);
   }
 
+  private deriveCourseSummary(
+    courseId: CourseId,
+    course?: StageCache,
+    meta?: CourseMeta
+  ): CourseSummary {
+    const currentStage = this.deriveCurrentStage(course);
+    const allLessonIds = course?.[3]?.curriculum?.modules
+      .flatMap(module => module.lessons.map(lesson => lesson.lessonId)) ?? [];
+    const completedLessonIds = new Set(course?.[4]?.completedLessonIds ?? []);
+    const completedLessons = Math.min(
+      completedLessonIds.size || course?.[4]?.progress.completedLessons || 0,
+      allLessonIds.length
+    );
+
+    return {
+      courseId,
+      title: this.deriveCourseTitle(courseId, course) ?? meta?.title ?? this.readableCourseId(courseId),
+      createdAt: meta?.createdAt ?? this.deriveCreatedAt(course) ?? new Date(0).toISOString(),
+      updatedAt: this.deriveUpdatedAt(course, meta) ?? new Date(0).toISOString(),
+      currentStage,
+      stageLabel: this.describeStage(currentStage),
+      stageStatus: this.deriveStageStatus(course, currentStage),
+      totalLessons: allLessonIds.length,
+      completedLessons,
+      remainingLessonIds: allLessonIds.filter(lessonId => !completedLessonIds.has(lessonId)),
+      outputRootPath: course?.[4]?.outputs?.rootDir,
+      courseIndexPath: course?.[4]?.outputs?.courseIndexPath,
+    };
+  }
+
+  private deriveCurrentStage(course?: StageCache): StageId {
+    for (const stage of [4, 3, 2, 1, 0] as StageId[]) {
+      if (course?.[stage]) return stage;
+    }
+    return 0;
+  }
+
+  private describeStage(stage: StageId): string {
+    if (stage === 0) return 'Taxonomy';
+    if (stage === 1) return 'Concepts';
+    if (stage === 2) return 'Diagnostic';
+    if (stage === 3) return 'Curriculum';
+    return 'Lessons';
+  }
+
+  private deriveStageStatus(course: StageCache | undefined, stage: StageId): 'pending' | 'complete' {
+    if (stage === 2) return course?.[2]?.completedAt ? 'complete' : 'pending';
+    return course?.[stage]?.status === 'complete' ? 'complete' : 'pending';
+  }
+
   private deriveCreatedAt(course?: StageCache): string | undefined {
     return course?.[0]?.startedAt
       || course?.[0]?.completedAt
@@ -108,6 +172,19 @@ export class CacheService {
       || course?.[3]?.completedAt
       || course?.[4]?.startedAt
       || course?.[4]?.completedAt;
+  }
+
+  private deriveUpdatedAt(course?: StageCache, meta?: CourseMeta): string | undefined {
+    return course?.[4]?.completedAt
+      || course?.[4]?.startedAt
+      || course?.[3]?.completedAt
+      || course?.[3]?.startedAt
+      || course?.[2]?.completedAt
+      || course?.[1]?.completedAt
+      || course?.[1]?.startedAt
+      || course?.[0]?.completedAt
+      || course?.[0]?.startedAt
+      || meta?.createdAt;
   }
 
   private readableCourseId(courseId: string): string {

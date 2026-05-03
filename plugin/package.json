@@ -1,6 +1,6 @@
 {
   "name": "obsidian-delve",
-  "version": "0.1.4",
+  "version": "0.1.6",
   "description": "AI-driven personalised learning environment for Obsidian",
   "main": "main.js",
   "scripts": {

@@ -1,0 +1,9 @@
+Completed task 1: Delve: add bases home page.
+
+- Added a Delve home view with a dashboard header, course tile rendering, empty state, refresh, and start-new-course actions.
+- Added the `open-delve-home` command and registered the new `delve-home-view` Obsidian view type.
+- Added course summary derivation to `CacheService`, including current stage, stage status, total lessons, completed lessons, remaining lesson ids, and generated output paths.
+- Added tests for dashboard summary derivation and kept the existing saved curriculum listing test passing.
+- Built the plugin and copied the built artifacts into the active `engram` vault for manual verification.
+- Verified in Obsidian using Computer Use that `Delve: Open Delve home` appears in the command palette and opens the new home dashboard.
+- Bumped the plugin release metadata to `0.1.6` so BRAT can register the update from `manifest.json` and `versions.json`.

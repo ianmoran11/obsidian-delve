@@ -9,12 +9,14 @@ import { TaxonomyView } from './ui/taxonomy-view';
 import { ConceptsView } from './ui/concepts-view';
 import { DiagnosticView } from './ui/diagnostic-view';
 import { SyllabusEditorView } from './ui/syllabus-editor-view';
+import { HomeView } from './ui/home-view';
 import { ResumeModal } from './ui/resume-modal';
 import { OpenCurriculumModal } from './ui/open-curriculum-modal';
 import {
   TAXONOMY_VIEW_TYPE,
   CONCEPTS_VIEW_TYPE,
   DIAGNOSTIC_VIEW_TYPE,
+  HOME_VIEW_TYPE,
   SYLLABUS_VIEW_TYPE,
 } from './constants';
 import { ensurePromptSettings, loadPrompt, loadRuntimeConfig, PromptConfig, PromptName } from './prompts';
@@ -78,9 +80,16 @@ export default class DelvePlugin extends Plugin {
     this.registerView(CONCEPTS_VIEW_TYPE, leaf => new ConceptsView(leaf, this));
     this.registerView(DIAGNOSTIC_VIEW_TYPE, leaf => new DiagnosticView(leaf, this));
     this.registerView(SYLLABUS_VIEW_TYPE, leaf => new SyllabusEditorView(leaf, this));
+    this.registerView(HOME_VIEW_TYPE, leaf => new HomeView(leaf, this));
   }
 
   private registerCommands(): void {
+    this.addCommand({
+      id: 'open-delve-home',
+      name: 'Open Delve home',
+      callback: () => void this.openHome(),
+    });
+
     this.addCommand({
       id: 'start-course',
       name: 'Start new course',
@@ -92,6 +101,15 @@ export default class DelvePlugin extends Plugin {
       name: 'Open saved curriculum',
       callback: () => void this.openSavedCurriculum(),
     });
+  }
+
+  private async openHome(): Promise<void> {
+    const leaf = this.app.workspace.getLeaf(false);
+    await leaf.setViewState({
+      type: HOME_VIEW_TYPE,
+      active: true,
+    });
+    this.app.workspace.revealLeaf(leaf);
   }
 
   private async openSavedCurriculum(): Promise<void> {

@@ -30,7 +30,7 @@ __export(main_exports, {
 module.exports = __toCommonJS(main_exports);
 
 // src/plugin.ts
-var import_obsidian15 = require("obsidian");
+var import_obsidian16 = require("obsidian");
 
 // src/settings.ts
 var import_obsidian = require("obsidian");
@@ -49,6 +49,7 @@ var TAXONOMY_VIEW_TYPE = "delve-taxonomy-view";
 var CONCEPTS_VIEW_TYPE = "delve-concepts-view";
 var DIAGNOSTIC_VIEW_TYPE = "delve-diagnostic-view";
 var SYLLABUS_VIEW_TYPE = "delve-syllabus-editor-view";
+var HOME_VIEW_TYPE = "delve-home-view";
 
 // src/prompts/index.ts
 var DEFAULT_MODEL = "google/gemini-3-flash-preview";
@@ -629,6 +630,14 @@ var CacheService = class {
       };
     }).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
+  async listCourseSummaries() {
+    const data = await this.readAll();
+    const courseIds = /* @__PURE__ */ new Set([
+      ...Object.keys(data.courses),
+      ...Object.keys(data.meta)
+    ]);
+    return [...courseIds].map((courseId) => this.deriveCourseSummary(courseId, data.courses[courseId], data.meta[courseId])).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  }
   async clearCourse(courseId) {
     const data = await this.readAll();
     delete data.courses[courseId];
@@ -638,8 +647,57 @@ var CacheService = class {
   deriveCourseTitle(courseId, course) {
     return course?.[3]?.curriculum?.title || course?.[0]?.seedTopic || this.readableCourseId(courseId);
   }
+  deriveCourseSummary(courseId, course, meta) {
+    const currentStage = this.deriveCurrentStage(course);
+    const allLessonIds = course?.[3]?.curriculum?.modules.flatMap((module2) => module2.lessons.map((lesson) => lesson.lessonId)) ?? [];
+    const completedLessonIds = new Set(course?.[4]?.completedLessonIds ?? []);
+    const completedLessons = Math.min(
+      completedLessonIds.size || course?.[4]?.progress.completedLessons || 0,
+      allLessonIds.length
+    );
+    return {
+      courseId,
+      title: this.deriveCourseTitle(courseId, course) ?? meta?.title ?? this.readableCourseId(courseId),
+      createdAt: meta?.createdAt ?? this.deriveCreatedAt(course) ?? (/* @__PURE__ */ new Date(0)).toISOString(),
+      updatedAt: this.deriveUpdatedAt(course, meta) ?? (/* @__PURE__ */ new Date(0)).toISOString(),
+      currentStage,
+      stageLabel: this.describeStage(currentStage),
+      stageStatus: this.deriveStageStatus(course, currentStage),
+      totalLessons: allLessonIds.length,
+      completedLessons,
+      remainingLessonIds: allLessonIds.filter((lessonId) => !completedLessonIds.has(lessonId)),
+      outputRootPath: course?.[4]?.outputs?.rootDir,
+      courseIndexPath: course?.[4]?.outputs?.courseIndexPath
+    };
+  }
+  deriveCurrentStage(course) {
+    for (const stage of [4, 3, 2, 1, 0]) {
+      if (course?.[stage])
+        return stage;
+    }
+    return 0;
+  }
+  describeStage(stage) {
+    if (stage === 0)
+      return "Taxonomy";
+    if (stage === 1)
+      return "Concepts";
+    if (stage === 2)
+      return "Diagnostic";
+    if (stage === 3)
+      return "Curriculum";
+    return "Lessons";
+  }
+  deriveStageStatus(course, stage) {
+    if (stage === 2)
+      return course?.[2]?.completedAt ? "complete" : "pending";
+    return course?.[stage]?.status === "complete" ? "complete" : "pending";
+  }
   deriveCreatedAt(course) {
     return course?.[0]?.startedAt || course?.[0]?.completedAt || course?.[3]?.startedAt || course?.[3]?.completedAt || course?.[4]?.startedAt || course?.[4]?.completedAt;
+  }
+  deriveUpdatedAt(course, meta) {
+    return course?.[4]?.completedAt || course?.[4]?.startedAt || course?.[3]?.completedAt || course?.[3]?.startedAt || course?.[2]?.completedAt || course?.[1]?.completedAt || course?.[1]?.startedAt || course?.[0]?.completedAt || course?.[0]?.startedAt || meta?.createdAt;
   }
   readableCourseId(courseId) {
     return courseId.replace(/[-_]+/g, " ").replace(/\b\w/g, (char) => char.toUpperCase());
@@ -6144,6 +6202,52 @@ function buildNavigationLinks(courseIndexLink, moduleLink, previousLessonLink, n
 }
 
 // src/stages/stage4-generate.ts
+async function createSkeletonNotes(plugin, courseId) {
+  await plugin.lockService.acquire(courseId, 4);
+  try {
+    const stage3 = await plugin.cacheService.readStage(courseId, 3);
+    if (!stage3?.curriculum) {
+      throw new Error("Stage 3 (curriculum) must be complete before creating skeleton notes.");
+    }
+    const curriculum = stage3.curriculum;
+    const outputs = buildOutputPaths(curriculum);
+    await ensureFolderTree(plugin, outputs);
+    const existingCache = await plugin.cacheService.readStage(courseId, 4);
+    const completedLessonIds = new Set(normalizeCompletedLessonIds(existingCache, outputs));
+    const lessonOrder = flattenLessons(curriculum);
+    const totalLessons = lessonOrder.length;
+    let skeletonCount = 0;
+    for (const { module: module2, lesson } of lessonOrder) {
+      if (completedLessonIds.has(lesson.lessonId))
+        continue;
+      await writeSkeletonLesson(plugin, curriculum, outputs, module2, lesson);
+      skeletonCount++;
+    }
+    await writeSupportingOutputs(plugin, curriculum, outputs);
+    const cache = {
+      courseId,
+      progress: {
+        totalLessons,
+        completedLessons: existingCache?.progress.completedLessons ?? 0
+      },
+      outputs,
+      completedLessonIds: existingCache?.completedLessonIds ?? [],
+      generatedLessonSummaries: existingCache?.generatedLessonSummaries ?? {},
+      status: existingCache?.status ?? "pending",
+      startedAt: existingCache?.startedAt ?? (/* @__PURE__ */ new Date()).toISOString(),
+      completedAt: existingCache?.completedAt
+    };
+    await plugin.cacheService.writeStage(courseId, 4, cache);
+    new import_obsidian11.Notice(
+      skeletonCount === 0 ? "All lessons are already generated \u2014 no skeletons needed." : `Created ${skeletonCount} skeleton note${skeletonCount === 1 ? "" : "s"} in ${outputs.rootDir}.`
+    );
+  } catch (error) {
+    new import_obsidian11.Notice(`Delve: skeleton creation failed \u2014 ${error.message}`);
+    throw error;
+  } finally {
+    await plugin.lockService.release();
+  }
+}
 async function runStage4(plugin, courseId, options = {}) {
   await plugin.lockService.acquire(courseId, 4);
   try {
@@ -6401,6 +6505,57 @@ async function writeSupportingOutputs(plugin, curriculum, outputs) {
     outputs.courseIndexPath
   );
 }
+async function writeSkeletonLesson(plugin, curriculum, outputs, module2, lesson) {
+  const lessonOrder = flattenLessons(curriculum);
+  const flatLessons = lessonOrder.map((item) => item.lesson);
+  const lessonIndex = flatLessons.findIndex((item) => item.lessonId === lesson.lessonId);
+  const previous = lessonIndex > 0 ? flatLessons[lessonIndex - 1] : void 0;
+  const next = lessonIndex < flatLessons.length - 1 ? flatLessons[lessonIndex + 1] : void 0;
+  const navigation = buildNavigationLinks(
+    wikiLinkFromPath(outputs.courseIndexPath),
+    wikiLinkFromPath(outputs.modulePaths[module2.moduleId]),
+    previous ? wikiLinkFromPath(outputs.lessonPaths[previous.lessonId]) : void 0,
+    next ? wikiLinkFromPath(outputs.lessonPaths[next.lessonId]) : void 0
+  );
+  const prereqLines = lesson.prerequisites.length > 0 ? lesson.prerequisites.map((prereqId) => {
+    const prereq = lessonOrder.find((item) => item.lesson.lessonId === prereqId)?.lesson;
+    return `- ${prereq ? prereq.title : prereqId}`;
+  }).join("\n") : "- None";
+  const content = [
+    buildFrontmatter({
+      status: "skeleton",
+      lessonId: lesson.lessonId,
+      moduleId: module2.moduleId
+    }),
+    "",
+    `# ${lesson.title}`,
+    "",
+    navigation.breadcrumbs,
+    "",
+    `> ${lesson.description}`,
+    "",
+    `**Module:** ${module2.title}`,
+    "**Prerequisites:**",
+    prereqLines,
+    "",
+    "## Overview",
+    "",
+    "<!-- TODO: Write a concise overview introducing the key concepts of this lesson. -->",
+    "",
+    "## Content",
+    "",
+    "<!-- TODO: Write the main lesson content. Cover the topics described in the lesson description above. -->",
+    "",
+    "## Summary",
+    "",
+    "<!-- TODO: Summarize the key takeaways from this lesson in a few bullet points. -->",
+    "",
+    "---",
+    "",
+    navigation.sequence
+  ].join("\n");
+  await writeMarkdownFile(plugin, outputs.lessonPaths[lesson.lessonId], content);
+}
 async function writeLessonOutput(plugin, curriculum, outputs, module2, lesson, draft, mode, renderedPrompt, promptMeta) {
   const lessonOrder = flattenLessons(curriculum);
   const flatLessons = lessonOrder.map((item) => item.lesson);
@@ -6614,6 +6769,7 @@ var SyllabusEditorView = class extends import_obsidian12.ItemView {
     __publicField(this, "saving", false);
     __publicField(this, "dirty", false);
     __publicField(this, "generatingLessons", false);
+    __publicField(this, "creatingSkeletons", false);
     __publicField(this, "selectedLessonIds", /* @__PURE__ */ new Set());
   }
   getViewType() {
@@ -6630,6 +6786,7 @@ var SyllabusEditorView = class extends import_obsidian12.ItemView {
     this.saving = false;
     this.dirty = false;
     this.generatingLessons = false;
+    this.creatingSkeletons = false;
     this.selectedLessonIds = /* @__PURE__ */ new Set();
     await this.render();
   }
@@ -6790,6 +6947,8 @@ var SyllabusEditorView = class extends import_obsidian12.ItemView {
     const status = footer.createDiv("delve-syllabus__status");
     if (this.saving) {
       status.textContent = "Saving syllabus draft\u2026";
+    } else if (this.creatingSkeletons) {
+      status.textContent = "Creating skeleton notes\u2026";
     } else if (this.generatingLessons) {
       status.textContent = remainingLessons > 0 ? `Generating lesson ${completedLessons + 1} of ${lessonCount}\u2026` : "Wrapping up lesson generation\u2026";
     } else if (this.dirty) {
@@ -6806,7 +6965,7 @@ var SyllabusEditorView = class extends import_obsidian12.ItemView {
       text: "Select all",
       cls: "delve-taxonomy__action-btn"
     });
-    selectAllBtn.disabled = this.saving || this.generatingLessons || remainingLessons === 0;
+    selectAllBtn.disabled = this.saving || this.generatingLessons || this.creatingSkeletons || remainingLessons === 0;
     selectAllBtn.addEventListener("click", async () => {
       this.selectAllRemainingLessons(completedLessonIds);
       await this.render();
@@ -6815,7 +6974,7 @@ var SyllabusEditorView = class extends import_obsidian12.ItemView {
       text: "Select none",
       cls: "delve-taxonomy__action-btn"
     });
-    selectNoneBtn.disabled = this.saving || this.generatingLessons || selectedPendingLessonCount === 0;
+    selectNoneBtn.disabled = this.saving || this.generatingLessons || this.creatingSkeletons || selectedPendingLessonCount === 0;
     selectNoneBtn.addEventListener("click", async () => {
       this.selectedLessonIds.clear();
       await this.render();
@@ -6824,14 +6983,20 @@ var SyllabusEditorView = class extends import_obsidian12.ItemView {
       text: "Regenerate draft",
       cls: "delve-taxonomy__action-btn"
     });
-    regenerateBtn.disabled = this.saving || this.generatingLessons;
+    regenerateBtn.disabled = this.saving || this.generatingLessons || this.creatingSkeletons;
     regenerateBtn.addEventListener("click", () => void this.handleRegenerate());
     const saveBtn = actions.createEl("button", {
       text: this.saving ? "Saving\u2026" : "Save draft",
       cls: "delve-taxonomy__action-btn delve-syllabus__save"
     });
-    saveBtn.disabled = this.saving || this.generatingLessons || !this.dirty;
+    saveBtn.disabled = this.saving || this.generatingLessons || this.creatingSkeletons || !this.dirty;
     saveBtn.addEventListener("click", () => void this.handleSaveDraft());
+    const skeletonBtn = actions.createEl("button", {
+      text: this.creatingSkeletons ? "Creating skeletons\u2026" : "Create skeleton notes",
+      cls: "delve-taxonomy__action-btn"
+    });
+    skeletonBtn.disabled = this.saving || this.generatingLessons || this.creatingSkeletons || Boolean(this.state.loading) || lessonCount === 0;
+    skeletonBtn.addEventListener("click", () => void this.handleCreateSkeletonNotes());
     const finalizeBtn = actions.createEl("button", {
       text: getGenerateButtonLabel(
         this.generatingLessons,
@@ -6841,7 +7006,7 @@ var SyllabusEditorView = class extends import_obsidian12.ItemView {
       ),
       cls: "mod-cta delve-btn-primary delve-syllabus__finalize"
     });
-    finalizeBtn.disabled = this.saving || this.generatingLessons || Boolean(this.state.loading) || generationComplete;
+    finalizeBtn.disabled = this.saving || this.generatingLessons || this.creatingSkeletons || Boolean(this.state.loading) || generationComplete;
     finalizeBtn.addEventListener("click", () => void this.handleGenerateLessons());
   }
   renderField(parent, label, value, onInput) {
@@ -6916,6 +7081,27 @@ var SyllabusEditorView = class extends import_obsidian12.ItemView {
       new import_obsidian12.Notice(`Could not generate lessons: ${e.message}`);
     } finally {
       this.generatingLessons = false;
+      await this.render();
+    }
+  }
+  async handleCreateSkeletonNotes() {
+    const courseId = await this.ensureCourseId();
+    if (!courseId) {
+      new import_obsidian12.Notice("This curriculum tab is missing its course id. Reopen it from the assessment view.");
+      return;
+    }
+    if (this.creatingSkeletons)
+      return;
+    this.creatingSkeletons = true;
+    await this.render();
+    try {
+      await this.writeCurrentStage3(courseId);
+      this.dirty = false;
+      await createSkeletonNotes(this.plugin, courseId);
+    } catch (e) {
+      new import_obsidian12.Notice(`Could not create skeleton notes: ${e.message}`);
+    } finally {
+      this.creatingSkeletons = false;
       await this.render();
     }
   }
@@ -7047,8 +7233,169 @@ function generateRecoveredCourseId(seedTopic) {
   return `recovered-${topicSlug}-${Date.now().toString(36)}`;
 }
 
-// src/ui/resume-modal.ts
+// src/ui/home-view.ts
 var import_obsidian13 = require("obsidian");
+var HomeView = class extends import_obsidian13.ItemView {
+  constructor(leaf, plugin) {
+    super(leaf);
+    this.plugin = plugin;
+    __publicField(this, "loading", false);
+  }
+  getViewType() {
+    return HOME_VIEW_TYPE;
+  }
+  getDisplayText() {
+    return "Delve";
+  }
+  getIcon() {
+    return "library";
+  }
+  async onOpen() {
+    await this.render();
+  }
+  async onClose() {
+    this.contentEl.empty();
+  }
+  async render() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.addClass("delve-home");
+    const header = contentEl.createDiv("delve-home__header");
+    const titleBlock = header.createDiv("delve-home__title-block");
+    titleBlock.createEl("h2", { text: "Delve" });
+    titleBlock.createEl("p", {
+      text: "Course dashboard",
+      cls: "delve-home__subtitle"
+    });
+    const actions = header.createDiv("delve-home__header-actions");
+    const refreshBtn = actions.createEl("button", {
+      text: "Refresh",
+      cls: "delve-taxonomy__action-btn"
+    });
+    refreshBtn.disabled = this.loading;
+    refreshBtn.addEventListener("click", () => void this.render());
+    const newCourseBtn = actions.createEl("button", {
+      text: "Start new course",
+      cls: "mod-cta delve-btn-primary delve-home__new-course"
+    });
+    newCourseBtn.addEventListener("click", () => new TopicInputModal(this.app, this.plugin).open());
+    const body = contentEl.createDiv("delve-home__body");
+    this.loading = true;
+    let summaries = [];
+    try {
+      summaries = await this.plugin.cacheService.listCourseSummaries();
+    } finally {
+      this.loading = false;
+    }
+    if (summaries.length === 0) {
+      const empty = body.createDiv("delve-home__empty");
+      empty.createEl("h3", { text: "No courses yet" });
+      empty.createEl("p", { text: "Start a course to see its curriculum and lesson progress here." });
+      return;
+    }
+    const grid = body.createDiv("delve-home__grid");
+    summaries.forEach((summary) => this.renderCourseTile(grid, summary));
+  }
+  renderCourseTile(parent, summary) {
+    const tile = parent.createDiv("delve-home__tile");
+    const heading = tile.createDiv("delve-home__tile-heading");
+    heading.createEl("h3", {
+      text: summary.title,
+      cls: "delve-home__course-title"
+    });
+    heading.createEl("span", {
+      text: summary.stageStatus === "complete" ? `${summary.stageLabel} complete` : `${summary.stageLabel} pending`,
+      cls: `delve-home__badge delve-home__badge--${summary.stageStatus}`
+    });
+    const meta = tile.createDiv("delve-home__meta");
+    meta.createEl("span", { text: `Updated ${formatDate(summary.updatedAt)}` });
+    if (summary.outputRootPath) {
+      meta.createEl("span", { text: summary.outputRootPath });
+    }
+    const lessonLabel = summary.totalLessons > 0 ? `${summary.completedLessons}/${summary.totalLessons} lessons generated` : "No curriculum lessons yet";
+    tile.createEl("div", {
+      text: lessonLabel,
+      cls: "delve-home__progress-label"
+    });
+    const progress = tile.createDiv("delve-home__progress");
+    const fill = progress.createDiv("delve-home__progress-fill");
+    fill.style.width = `${getProgressPercent(summary)}%`;
+    const tileActions = tile.createDiv("delve-home__tile-actions");
+    const resumeBtn = tileActions.createEl("button", {
+      text: summary.currentStage >= 3 ? "Open curriculum" : "Resume",
+      cls: "mod-cta delve-btn-primary delve-home__tile-primary"
+    });
+    resumeBtn.addEventListener("click", () => void this.openCourse(summary));
+    const nextBtn = tileActions.createEl("button", {
+      text: "Generate next",
+      cls: "delve-taxonomy__action-btn"
+    });
+    nextBtn.disabled = summary.totalLessons === 0 || summary.completedLessons >= summary.totalLessons;
+    nextBtn.addEventListener("click", () => void this.generateLessons(summary, "next"));
+    const remainingBtn = tileActions.createEl("button", {
+      text: "Generate remaining",
+      cls: "delve-taxonomy__action-btn"
+    });
+    remainingBtn.disabled = summary.remainingLessonIds.length === 0;
+    remainingBtn.addEventListener("click", () => void this.generateLessons(summary, "remaining"));
+    if (summary.courseIndexPath) {
+      const openIndexBtn = tileActions.createEl("button", {
+        text: "Open index",
+        cls: "delve-taxonomy__action-btn"
+      });
+      openIndexBtn.addEventListener("click", () => void this.openCourseIndex(summary));
+    }
+  }
+  async openCourse(summary) {
+    if (summary.currentStage >= 3) {
+      await resumeStage3(this.plugin, summary.courseId);
+      return;
+    }
+    new import_obsidian13.Notice("Resume this course from the command palette once its curriculum has been drafted.");
+  }
+  async generateLessons(summary, mode) {
+    try {
+      if (mode === "remaining") {
+        await runStage4(this.plugin, summary.courseId, { lessonIds: summary.remainingLessonIds });
+      } else {
+        await runStage4(this.plugin, summary.courseId);
+      }
+      await this.render();
+    } catch (e) {
+      new import_obsidian13.Notice(`Could not generate lessons: ${e.message}`);
+    }
+  }
+  async openCourseIndex(summary) {
+    if (!summary.courseIndexPath)
+      return;
+    const file = this.app.vault.getAbstractFileByPath(summary.courseIndexPath);
+    if (!(file instanceof import_obsidian13.TFile)) {
+      new import_obsidian13.Notice("The generated course index could not be found.");
+      return;
+    }
+    const leaf = this.app.workspace.getLeaf(false);
+    await leaf.openFile(file);
+    this.app.workspace.revealLeaf(leaf);
+  }
+};
+function getProgressPercent(summary) {
+  if (summary.totalLessons === 0)
+    return 0;
+  return Math.round(summary.completedLessons / summary.totalLessons * 100);
+}
+function formatDate(value) {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime()))
+    return value;
+  return parsed.toLocaleDateString(void 0, {
+    year: "numeric",
+    month: "short",
+    day: "numeric"
+  });
+}
+
+// src/ui/resume-modal.ts
+var import_obsidian14 = require("obsidian");
 var STAGE_NAMES = {
   0: "Topic Explorer",
   1: "Concept Extraction",
@@ -7056,7 +7403,7 @@ var STAGE_NAMES = {
   3: "Curriculum Design",
   4: "Content Generation"
 };
-var ResumeModal = class extends import_obsidian13.Modal {
+var ResumeModal = class extends import_obsidian14.Modal {
   constructor(app, lock) {
     super(app);
     this.lock = lock;
@@ -7078,7 +7425,7 @@ var ResumeModal = class extends import_obsidian13.Modal {
       text: `Course: ${this.lock.courseId}`,
       cls: "setting-item-description"
     });
-    new import_obsidian13.Setting(contentEl).addButton(
+    new import_obsidian14.Setting(contentEl).addButton(
       (btn) => btn.setButtonText("Resume").setCta().onClick(() => {
         this.close();
         this.resolve("resume");
@@ -7097,8 +7444,8 @@ var ResumeModal = class extends import_obsidian13.Modal {
 };
 
 // src/ui/open-curriculum-modal.ts
-var import_obsidian14 = require("obsidian");
-var OpenCurriculumModal = class extends import_obsidian14.FuzzySuggestModal {
+var import_obsidian15 = require("obsidian");
+var OpenCurriculumModal = class extends import_obsidian15.FuzzySuggestModal {
   constructor(app, courses, onChoose) {
     super(app);
     this.courses = courses;
@@ -7131,7 +7478,7 @@ function formatSavedDate(value) {
 }
 
 // src/plugin.ts
-var DelvePlugin = class extends import_obsidian15.Plugin {
+var DelvePlugin = class extends import_obsidian16.Plugin {
   constructor() {
     super(...arguments);
     __publicField(this, "settings");
@@ -7183,8 +7530,14 @@ var DelvePlugin = class extends import_obsidian15.Plugin {
     this.registerView(CONCEPTS_VIEW_TYPE, (leaf) => new ConceptsView(leaf, this));
     this.registerView(DIAGNOSTIC_VIEW_TYPE, (leaf) => new DiagnosticView(leaf, this));
     this.registerView(SYLLABUS_VIEW_TYPE, (leaf) => new SyllabusEditorView(leaf, this));
+    this.registerView(HOME_VIEW_TYPE, (leaf) => new HomeView(leaf, this));
   }
   registerCommands() {
+    this.addCommand({
+      id: "open-delve-home",
+      name: "Open Delve home",
+      callback: () => void this.openHome()
+    });
     this.addCommand({
       id: "start-course",
       name: "Start new course",
@@ -7195,6 +7548,14 @@ var DelvePlugin = class extends import_obsidian15.Plugin {
       name: "Open saved curriculum",
       callback: () => void this.openSavedCurriculum()
     });
+  }
+  async openHome() {
+    const leaf = this.app.workspace.getLeaf(false);
+    await leaf.setViewState({
+      type: HOME_VIEW_TYPE,
+      active: true
+    });
+    this.app.workspace.revealLeaf(leaf);
   }
   async openSavedCurriculum() {
     const courses = await this.cacheService.listCourses();
@@ -7209,7 +7570,7 @@ var DelvePlugin = class extends import_obsidian15.Plugin {
       }
     }
     if (curricula.length === 0) {
-      new import_obsidian15.Notice("No saved curricula found.");
+      new import_obsidian16.Notice("No saved curricula found.");
       return;
     }
     new OpenCurriculumModal(this.app, curricula, (course) => {
@@ -7296,7 +7657,7 @@ var DelvePlugin = class extends import_obsidian15.Plugin {
   }
   async handleLoadError(error) {
     console.error("Delve: failed to load", error);
-    new import_obsidian15.Notice(`Delve failed to load: ${error.message}`);
+    new import_obsidian16.Notice(`Delve failed to load: ${error.message}`);
     try {
       await this.app.vault.adapter.write(
         "delve-load-error.md",

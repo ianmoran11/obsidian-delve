@@ -128,6 +128,21 @@ export interface CourseMeta {
   createdAt: string;
 }
 
+export interface CourseSummary {
+  courseId: CourseId;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+  currentStage: StageId;
+  stageLabel: string;
+  stageStatus: 'pending' | 'complete';
+  totalLessons: number;
+  completedLessons: number;
+  remainingLessonIds: string[];
+  outputRootPath?: string;
+  courseIndexPath?: string;
+}
+
 export interface PluginData {
   settings?: Record<string, unknown>;
   courses: Record<CourseId, StageCache>;
