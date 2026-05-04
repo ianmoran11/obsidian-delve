@@ -38,7 +38,9 @@ const PROMPTS: Record<PromptName, PromptDefinition> = {
     filename: 'Stage 0 - Taxonomy.md',
     description: 'Generates the first scoped taxonomy for a broad topic.',
     defaultModel: DEFAULT_MODEL,
-    template: `You are a curriculum expert. Given the broad topic "{{topic}}", generate a comprehensive hierarchical taxonomy of the subject area.
+    template: `You are a curriculum expert. Generate a comprehensive hierarchical taxonomy for this course request.
+
+{{courseRequest}}
 
 Return a JSON object with this EXACT structure:
 {
@@ -57,7 +59,7 @@ Return a JSON object with this EXACT structure:
 Requirements:
 - 3 to 5 top-level domains, 3 to 6 subtopics per domain, maximum 3 levels deep
 - Every node MUST have: id (unique kebab-case), title, description
-- Cover the full breadth of "{{topic}}" comprehensively`,
+- Cover the full breadth of "{{courseTitle}}" comprehensively while honoring the detailed request`,
   },
   'stage0-disaggregate': {
     title: 'Stage 0 - Disaggregate Node',
@@ -103,7 +105,11 @@ Return: { "topics": [ { "id": "kebab-id", "title": "...", "description": "One se
     filename: 'Stage 1 - Concept Extraction.md',
     description: 'Extracts the foundational concepts for the chosen scope.',
     defaultModel: DEFAULT_MODEL,
-    template: `You are a curriculum expert building a personalised course on "{{topic}}", scoped to: {{scopeSummary}}.
+    template: `You are a curriculum expert building a personalised course.
+
+{{courseRequest}}
+
+Chosen scope: {{scopeSummary}}
 
 Selected areas: {{scopeNodes}}
 
@@ -128,14 +134,19 @@ Requirements:
 - Each concept must be DISTINCT and LEARNABLE — not just a vocabulary term
 - If source material was provided and a concept appears in it, list the source filename(s) in sourceRefs
 - If no source material was provided, sourceRefs must be an empty array
-- Cover prerequisites, core ideas, and practical applications within the scope`,
+- Cover prerequisites, core ideas, and practical applications within the scope
+- Honor the detailed course request when selecting concepts, depth, tone, examples, and exclusions`,
   },
   'stage3-curriculum': {
     title: 'Stage 3 - Curriculum Design',
     filename: 'Stage 3 - Curriculum Design.md',
     description: 'Designs the editable syllabus from scope, concepts, and self-assessment.',
     defaultModel: DEFAULT_MODEL,
-    template: `You are designing a personalised course syllabus for "{{topic}}", scoped to: {{scopeSummary}}.
+    template: `You are designing a personalised course syllabus.
+
+{{courseRequest}}
+
+Chosen scope: {{scopeSummary}}
 
 Selected scope nodes: {{scopeNodes}}
 
@@ -179,6 +190,7 @@ Requirements:
 - Every lesson must have a unique lessonId in kebab-case
 - prerequisites must only reference lessonIds that appear earlier in the curriculum
 - Keep the syllabus tightly scoped to "{{scopeSummary}}"
+- Honor the detailed course request when choosing module sequence, lesson depth, examples, format, and assessment emphasis
 - Prefer user sources when they are strong, but fill gaps with general knowledge when needed`,
   },
   'stage4-lesson': {
@@ -186,9 +198,12 @@ Requirements:
     filename: 'Stage 4 - Lesson Generation.md',
     description: 'Writes one lesson at a time into the curriculum vault structure.',
     defaultModel: DEFAULT_MODEL,
-    template: `You are writing one lesson in an Obsidian-native personalised course on "{{topic}}".
+    template: `You are writing one lesson in an Obsidian-native personalised course.
 
 Course title: {{courseTitle}}
+Original course request:
+{{courseRequest}}
+
 Module: {{moduleTitle}}
 Lesson: {{lessonTitle}}
 Lesson brief: {{lessonDescription}}
@@ -215,7 +230,8 @@ Requirements:
 - Teach to the learner's current level implied by the curriculum brief
 - Include explanation, intuition, and at least one concrete example or worked scenario
 - Keep the lesson tightly scoped to the lesson brief and prerequisites
-- The lesson must be about "{{lessonTitle}}" within "{{moduleTitle}}" for the broader topic "{{topic}}"
+- The lesson must be about "{{lessonTitle}}" within "{{moduleTitle}}" for the broader course "{{courseTitle}}"
+- Honor the detailed course request when choosing tone, depth, examples, format, exclusions, and assessment style
 - Do not write about JSON, schemas, output formatting, validation, API structure, or prompt instructions unless the requested lesson is explicitly about those topics
 - difficulty must be one of: intro, intermediate, advanced
 - sourceRefs should list filenames only when the lesson materially uses user-provided sources; otherwise return []

@@ -18,6 +18,7 @@ import { buildFrontmatter } from '../writers/frontmatter';
 import { writeMarkdownFile } from '../writers/markdown';
 import { writeModuleMoc } from '../writers/moc';
 import { buildNavigationLinks } from '../writers/navigation';
+import { formatCourseRequest, getCourseRequest } from './stage0-topic';
 
 interface PromptCalloutMeta {
   model: string;
@@ -32,6 +33,7 @@ interface PromptCalloutMeta {
 }
 
 export interface RunStage4Options {
+  mode?: 'next' | 'all' | 'selected';
   lessonIds?: string[];
 }
 
@@ -106,6 +108,7 @@ export async function runStage4(
     if (!stage0 || !stage3?.curriculum) {
       throw new Error('Stage 0 and Stage 3 must be complete before lesson generation can begin.');
     }
+    const courseRequest = getCourseRequest(stage0);
 
     const curriculum = stage3.curriculum;
     const context = await plugin.contextService.build();
@@ -140,12 +143,15 @@ export async function runStage4(
       return;
     }
 
-    const lessonsToGenerate = selectedLessonIds.length > 0
-      ? remainingLessons.filter(item => selectedLessonIds.includes(item.lesson.lessonId))
-      : remainingLessons.slice(0, 1);
+    const generationMode = options.mode ?? (selectedLessonIds.length > 0 ? 'selected' : 'all');
+    const lessonsToGenerate = selectLessonsToGenerate(generationMode, remainingLessons, selectedLessonIds);
 
     if (lessonsToGenerate.length === 0) {
-      new Notice('None of the selected lessons still need to be generated.');
+      new Notice(
+        generationMode === 'selected'
+          ? 'None of the selected lessons still need to be generated.'
+          : 'No lessons need to be generated.'
+      );
       return;
     }
 
@@ -165,7 +171,11 @@ export async function runStage4(
 
     const promptConfig = await plugin.loadPrompt('stage4-lesson');
     new Notice(
-      lessonsToGenerate.length === 1
+      generationMode === 'next'
+        ? `Generating next lesson ${completedLessonIds.length + 1} of ${totalLessons}: ${lessonsToGenerate[0].lesson.title}`
+        : lessonsToGenerate.length === remainingLessons.length
+          ? `Generating all ${lessonsToGenerate.length} remaining lesson${lessonsToGenerate.length === 1 ? '' : 's'}.`
+          : lessonsToGenerate.length === 1
         ? `Generating lesson ${completedLessonIds.length + 1} of ${totalLessons}: ${lessonsToGenerate[0].lesson.title}`
         : `Generating ${lessonsToGenerate.length} selected lessons.`
     );
@@ -188,60 +198,69 @@ export async function runStage4(
         startedAt,
       });
 
-      const promptVariables = {
-        topic: stage0.seedTopic,
-        courseTitle: curriculum.title,
-        moduleTitle: nextLesson.module.title,
-        lessonTitle: nextLesson.lesson.title,
-        lessonDescription: nextLesson.lesson.description,
-        prerequisiteSummary: describePrerequisites(nextLesson.lesson, lessonOrder, updatedGeneratedLessonSummaries),
-        generationMode: context.mode,
-        contextSection: buildContextSection(context),
-      };
-      const renderedPrompt = renderPromptTemplate(promptConfig.template, promptVariables);
-      const raw = await plugin.llmService.callJson<{ lesson: LessonDraft }>(
-        promptConfig.template,
-        promptVariables,
-        promptConfig.model
-      );
-
-      const validated = await validateLessonDraft(
-        plugin,
-        raw,
-        promptConfig.model,
-        renderedPrompt,
-        stage0.seedTopic,
-        nextLesson.module.title,
-        nextLesson.lesson
-      );
-      const draft: LessonDraft = {
-        ...validated.lesson,
-        difficulty: validated.lesson.difficulty as LessonDraft['difficulty'],
-        sourceRefs: validated.lesson.sourceRefs ?? [],
-      };
-      const generatedAt = new Date().toISOString();
-
-      await writeLessonOutput(
-        plugin,
-        curriculum,
-        outputs,
-        nextLesson.module,
-        nextLesson.lesson,
-        draft,
-        context.mode,
-        renderedPrompt,
-        {
-          model: promptConfig.model,
-          promptPath: promptConfig.path,
-          topic: stage0.seedTopic,
+      let draft: LessonDraft;
+      try {
+        const promptVariables = {
+          topic: courseRequest.title,
+          courseTitle: curriculum.title,
+          courseRequest: formatCourseRequest(courseRequest),
+          courseDescription: courseRequest.description || 'No additional course requirements provided.',
           moduleTitle: nextLesson.module.title,
-          lessonId: nextLesson.lesson.lessonId,
+          lessonTitle: nextLesson.lesson.title,
+          lessonDescription: nextLesson.lesson.description,
+          prerequisiteSummary: describePrerequisites(nextLesson.lesson, lessonOrder, updatedGeneratedLessonSummaries),
           generationMode: context.mode,
-          sourceFileCount: context.fileCount,
-          generatedAt,
-          repairUsed: validated.repairUsed,
-        }
-      );
+          contextSection: buildContextSection(context),
+        };
+        const renderedPrompt = renderPromptTemplate(promptConfig.template, promptVariables);
+        const raw = await plugin.llmService.callJson<{ lesson: LessonDraft }>(
+          promptConfig.template,
+          promptVariables,
+          promptConfig.model
+        );
+
+        const validated = await validateLessonDraft(
+          plugin,
+          raw,
+          promptConfig.model,
+          renderedPrompt,
+          courseRequest.title,
+          nextLesson.module.title,
+          nextLesson.lesson
+        );
+        draft = {
+          ...validated.lesson,
+          difficulty: validated.lesson.difficulty as LessonDraft['difficulty'],
+          sourceRefs: validated.lesson.sourceRefs ?? [],
+        };
+        const generatedAt = new Date().toISOString();
+
+        await writeLessonOutput(
+          plugin,
+          curriculum,
+          outputs,
+          nextLesson.module,
+          nextLesson.lesson,
+          draft,
+          context.mode,
+          renderedPrompt,
+          {
+            model: promptConfig.model,
+            promptPath: promptConfig.path,
+            topic: courseRequest.title,
+            moduleTitle: nextLesson.module.title,
+            lessonId: nextLesson.lesson.lessonId,
+            generationMode: context.mode,
+            sourceFileCount: context.fileCount,
+            generatedAt,
+            repairUsed: validated.repairUsed,
+          }
+        );
+      } catch (error) {
+        throw new Error(
+          `Lesson generation failed for "${nextLesson.lesson.title}" (${nextLesson.lesson.lessonId}): ${(error as Error).message}`
+        );
+      }
 
       updatedCompletedLessonIds.push(nextLesson.lesson.lessonId);
       updatedGeneratedLessonSummaries[nextLesson.lesson.lessonId] = {
@@ -297,6 +316,18 @@ export async function runStage4(
   } finally {
     await plugin.lockService.release();
   }
+}
+
+function selectLessonsToGenerate(
+  mode: NonNullable<RunStage4Options['mode']>,
+  remainingLessons: Array<{ module: ModuleSpec; lesson: LessonSpec }>,
+  selectedLessonIds: string[]
+): Array<{ module: ModuleSpec; lesson: LessonSpec }> {
+  if (mode === 'next') return remainingLessons.slice(0, 1);
+  if (mode === 'selected') {
+    return remainingLessons.filter(item => selectedLessonIds.includes(item.lesson.lessonId));
+  }
+  return remainingLessons;
 }
 
 function buildOutputPaths(curriculum: Curriculum): Stage4OutputPaths {
@@ -446,6 +477,8 @@ async function writeSkeletonLesson(
     '**Prerequisites:**',
     prereqLines,
     '',
+    buildLessonProgressChecklist(),
+    '',
     '## Overview',
     '',
     '<!-- TODO: Write a concise overview introducing the key concepts of this lesson. -->',
@@ -505,6 +538,8 @@ async function writeLessonOutput(
     navigation.breadcrumbs,
     '',
     `> ${draft.summary}`,
+    '',
+    buildLessonProgressChecklist(),
     '',
     draft.bodyMarkdown.trim(),
     '',
@@ -666,6 +701,16 @@ function buildCourseIndex(curriculum: Curriculum, outputs: Stage4OutputPaths): s
 
   lines.push('', `Canvas: ${wikiLinkFromPath(outputs.canvasPath)}`);
   return lines.join('\n');
+}
+
+function buildLessonProgressChecklist(): string {
+  return [
+    '## Progress',
+    '',
+    '- [ ] Read',
+    '- [ ] Flashcards created',
+    '- [ ] Reviewed',
+  ].join('\n');
 }
 
 function flattenLessons(curriculum: Curriculum): Array<{ module: ModuleSpec; lesson: LessonSpec }> {

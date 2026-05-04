@@ -3,6 +3,7 @@ import type {
   CourseId,
   CourseMeta,
   CourseSummary,
+  NoteProgressSummary,
   PluginData,
   StageId,
   StageCache,
@@ -98,17 +99,18 @@ export class CacheService {
       ...Object.keys(data.meta),
     ]);
 
-    const summaries = new Map(
-      [...courseIds].map(courseId => [
+    const summaries = new Map<string, CourseSummary>();
+    for (const courseId of courseIds) {
+      summaries.set(
         courseId,
-        this.deriveCourseSummary(courseId, data.courses[courseId], data.meta[courseId]),
-      ])
-    );
+        await this.deriveCourseSummary(courseId, data.courses[courseId], data.meta[courseId])
+      );
+    }
 
     for (const summary of await this.discoverGeneratedCourseSummaries()) {
-      if (!summaries.has(summary.courseId)) {
-        summaries.set(summary.courseId, summary);
-      }
+      const existingKey = findMatchingSummaryKey(summaries, summary);
+      if (existingKey) summaries.set(existingKey, mergeGeneratedSummary(summaries.get(existingKey), summary));
+      else summaries.set(summary.courseId, summary);
     }
 
     return [...summaries.values()]
@@ -128,11 +130,11 @@ export class CacheService {
       || this.readableCourseId(courseId);
   }
 
-  private deriveCourseSummary(
+  private async deriveCourseSummary(
     courseId: CourseId,
     course?: StageCache,
     meta?: CourseMeta
-  ): CourseSummary {
+  ): Promise<CourseSummary> {
     const currentStage = this.deriveCurrentStage(course);
     const allLessonIds = course?.[3]?.curriculum?.modules
       .flatMap(module => module.lessons.map(lesson => lesson.lessonId)) ?? [];
@@ -141,6 +143,10 @@ export class CacheService {
       completedLessonIds.size || course?.[4]?.progress.completedLessons || 0,
       allLessonIds.length
     );
+    const lessonPaths = allLessonIds
+      .map(lessonId => course?.[4]?.outputs?.lessonPaths?.[lessonId])
+      .filter((path): path is string => Boolean(path));
+    const noteProgress = await this.readNoteProgressSummary(lessonPaths, allLessonIds.length);
 
     return {
       courseId,
@@ -156,6 +162,7 @@ export class CacheService {
       outputRootPath: course?.[4]?.outputs?.rootDir,
       courseIndexPath: course?.[4]?.outputs?.courseIndexPath,
       hasStage3Cache: Boolean(course?.[3]?.curriculum),
+      noteProgress,
     };
   }
 
@@ -187,6 +194,7 @@ export class CacheService {
     const lessonPaths = markdownFiles.filter(path => !isGeneratedCourseSupportFile(path));
     const title = await this.readGeneratedCourseTitle(courseIndexPath, folder);
     const updatedAt = await this.deriveGeneratedCourseUpdatedAt([courseIndexPath, ...lessonPaths]);
+    const noteProgress = await this.readNoteProgressSummary(lessonPaths);
 
     return {
       courseId: folder.split('/').pop() ?? folder,
@@ -202,7 +210,36 @@ export class CacheService {
       outputRootPath: folder,
       courseIndexPath,
       hasStage3Cache: false,
+      noteProgress,
     };
+  }
+
+  private async readNoteProgressSummary(
+    lessonPaths: string[],
+    fallbackTotal = lessonPaths.length
+  ): Promise<NoteProgressSummary> {
+    const summary: NoteProgressSummary = {
+      totalNotes: Math.max(fallbackTotal, lessonPaths.length),
+      readNotes: 0,
+      flashcardsCreatedNotes: 0,
+      reviewedNotes: 0,
+    };
+    const adapter = this.plugin.app?.vault?.adapter;
+    if (!adapter || lessonPaths.length === 0) return summary;
+
+    for (const path of lessonPaths) {
+      try {
+        const content = await adapter.read(path);
+        const progress = parseNoteProgress(content);
+        if (progress.read) summary.readNotes += 1;
+        if (progress.flashcardsCreated) summary.flashcardsCreatedNotes += 1;
+        if (progress.reviewed) summary.reviewedNotes += 1;
+      } catch {
+        // Missing or unreadable lesson notes count toward the total, but not toward progress.
+      }
+    }
+
+    return summary;
   }
 
   private async listMarkdownFiles(folder: string): Promise<string[]> {
@@ -304,4 +341,58 @@ export class CacheService {
 function isGeneratedCourseSupportFile(path: string): boolean {
   const name = path.split('/').pop();
   return name === 'Course Index.md' || name === 'Module MOC.md';
+}
+
+function findMatchingSummaryKey(
+  summaries: Map<string, CourseSummary>,
+  generated: CourseSummary
+): string | undefined {
+  if (summaries.has(generated.courseId)) return generated.courseId;
+
+  for (const [key, summary] of summaries) {
+    if (summary.outputRootPath && summary.outputRootPath === generated.outputRootPath) return key;
+    if (summary.courseIndexPath && summary.courseIndexPath === generated.courseIndexPath) return key;
+  }
+
+  return undefined;
+}
+
+function mergeGeneratedSummary(
+  cached: CourseSummary | undefined,
+  generated: CourseSummary
+): CourseSummary {
+  if (!cached) return generated;
+
+  return {
+    ...cached,
+    updatedAt: maxIsoDate(cached.updatedAt, generated.updatedAt),
+    totalLessons: Math.max(cached.totalLessons, generated.totalLessons),
+    completedLessons: Math.max(cached.completedLessons, generated.completedLessons),
+    outputRootPath: cached.outputRootPath ?? generated.outputRootPath,
+    courseIndexPath: cached.courseIndexPath ?? generated.courseIndexPath,
+    noteProgress: generated.noteProgress.totalNotes > 0
+      ? generated.noteProgress
+      : cached.noteProgress,
+  };
+}
+
+function maxIsoDate(a: string, b: string): string {
+  return a.localeCompare(b) >= 0 ? a : b;
+}
+
+function parseNoteProgress(content: string): {
+  read: boolean;
+  flashcardsCreated: boolean;
+  reviewed: boolean;
+} {
+  return {
+    read: isChecked(content, 'Read'),
+    flashcardsCreated: isChecked(content, 'Flashcards created'),
+    reviewed: isChecked(content, 'Reviewed'),
+  };
+}
+
+function isChecked(content: string, label: string): boolean {
+  const escapedLabel = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`^\\s*-\\s*\\[[xX]\\]\\s*${escapedLabel}\\s*$`, 'm').test(content);
 }

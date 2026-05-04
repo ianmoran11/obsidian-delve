@@ -18,6 +18,10 @@ describe('stage3: runStage3', () => {
         return makeStage0Cache({
           courseId: 'course-1',
           seedTopic: 'Category theory',
+          courseRequest: {
+            title: 'Category theory',
+            description: 'Make this practical for functional programmers and include proof intuition.',
+          },
           scopeSummary: 'Functors, natural transformations',
         });
       }
@@ -71,6 +75,14 @@ describe('stage3: runStage3', () => {
 
     await runStage3(plugin as never, 'course-1');
 
+    expect(plugin.llmService.callJson).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        courseRequest: expect.stringContaining('functional programmers'),
+        courseDescription: 'Make this practical for functional programmers and include proof intuition.',
+      }),
+      expect.any(String)
+    );
     expect(writeStage).toHaveBeenCalledTimes(2);
     expect(writeStage.mock.calls[0]?.[1]).toBe(3);
     expect(writeStage.mock.calls[0]?.[2]).toMatchObject({

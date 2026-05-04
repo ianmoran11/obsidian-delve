@@ -384,7 +384,7 @@ export class SyllabusEditorView extends ItemView {
       await this.ensureStage0SeedTopic(courseId);
       this.dirty = false;
       const selectedLessonIds = [...this.selectedLessonIds];
-      await runStage4(this.plugin, courseId, { lessonIds: selectedLessonIds });
+      await runStage4(this.plugin, courseId, { mode: 'selected', lessonIds: selectedLessonIds });
       selectedLessonIds.forEach(lessonId => this.selectedLessonIds.delete(lessonId));
     } catch (e) {
       new Notice(`Could not generate lessons: ${(e as Error).message}`);

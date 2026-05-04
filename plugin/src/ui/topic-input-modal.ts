@@ -3,7 +3,8 @@ import type DelvePlugin from '../../main';
 import { runStage0 } from '../stages/stage0-topic';
 
 export class TopicInputModal extends Modal {
-  private topic = '';
+  private title = '';
+  private description = '';
   private readonly courseId: string;
 
   constructor(app: App, private plugin: DelvePlugin) {
@@ -17,24 +18,36 @@ export class TopicInputModal extends Modal {
 
     contentEl.createEl('h2', { text: 'Start a New Course' });
     contentEl.createEl('p', {
-      text: 'Enter a broad topic and Delve will build a personalised course for you.',
+      text: 'Give Delve a course title and any goals, audience, constraints, or style notes you want it to honor.',
       cls: 'delve-subtitle',
     });
 
     new Setting(contentEl)
-      .setName('Topic')
+      .setName('Course title')
       .setDesc('e.g. “Machine Learning”, “Linear Algebra”, “Kubernetes”')
       .addText(text => {
         text
-          .setPlaceholder('Enter your topic…')
+          .setPlaceholder('Enter your course title…')
           .onChange(v => {
-            this.topic = v.trim();
+            this.title = v.trim();
           });
         text.inputEl.addClass('delve-topic-input__field');
         text.inputEl.addEventListener('keydown', (e: KeyboardEvent) => {
           if (e.key === 'Enter') void this.submit();
         });
         setTimeout(() => text.inputEl.focus(), 50);
+      });
+
+    new Setting(contentEl)
+      .setName('Detailed request')
+      .setDesc('Optional: goals, learner level, source preferences, format, assessment style, exclusions, or constraints.')
+      .addTextArea(text => {
+        text
+          .setPlaceholder('Describe the course you want Delve to build…')
+          .onChange(v => {
+            this.description = v.trim();
+          });
+        text.inputEl.addClass('delve-topic-input__description');
       });
 
     const btnRow = contentEl.createDiv('delve-topic-input__actions');
@@ -46,8 +59,8 @@ export class TopicInputModal extends Modal {
   }
 
   private async submit(): Promise<void> {
-    if (!this.topic) {
-      new Notice('Please enter a topic.');
+    if (!this.title) {
+      new Notice('Please enter a course title.');
       return;
     }
     if (!this.plugin.settings.openRouterApiKey) {
@@ -55,7 +68,10 @@ export class TopicInputModal extends Modal {
       return;
     }
     this.close();
-    await runStage0(this.plugin, this.topic, this.courseId);
+    await runStage0(this.plugin, {
+      title: this.title,
+      description: this.description,
+    }, this.courseId);
   }
 
   onClose(): void {

@@ -60,7 +60,9 @@ var PROMPTS = {
     filename: "Stage 0 - Taxonomy.md",
     description: "Generates the first scoped taxonomy for a broad topic.",
     defaultModel: DEFAULT_MODEL,
-    template: `You are a curriculum expert. Given the broad topic "{{topic}}", generate a comprehensive hierarchical taxonomy of the subject area.
+    template: `You are a curriculum expert. Generate a comprehensive hierarchical taxonomy for this course request.
+
+{{courseRequest}}
 
 Return a JSON object with this EXACT structure:
 {
@@ -79,7 +81,7 @@ Return a JSON object with this EXACT structure:
 Requirements:
 - 3 to 5 top-level domains, 3 to 6 subtopics per domain, maximum 3 levels deep
 - Every node MUST have: id (unique kebab-case), title, description
-- Cover the full breadth of "{{topic}}" comprehensively`
+- Cover the full breadth of "{{courseTitle}}" comprehensively while honoring the detailed request`
   },
   "stage0-disaggregate": {
     title: "Stage 0 - Disaggregate Node",
@@ -125,7 +127,11 @@ Return: { "topics": [ { "id": "kebab-id", "title": "...", "description": "One se
     filename: "Stage 1 - Concept Extraction.md",
     description: "Extracts the foundational concepts for the chosen scope.",
     defaultModel: DEFAULT_MODEL,
-    template: `You are a curriculum expert building a personalised course on "{{topic}}", scoped to: {{scopeSummary}}.
+    template: `You are a curriculum expert building a personalised course.
+
+{{courseRequest}}
+
+Chosen scope: {{scopeSummary}}
 
 Selected areas: {{scopeNodes}}
 
@@ -150,14 +156,19 @@ Requirements:
 - Each concept must be DISTINCT and LEARNABLE \u2014 not just a vocabulary term
 - If source material was provided and a concept appears in it, list the source filename(s) in sourceRefs
 - If no source material was provided, sourceRefs must be an empty array
-- Cover prerequisites, core ideas, and practical applications within the scope`
+- Cover prerequisites, core ideas, and practical applications within the scope
+- Honor the detailed course request when selecting concepts, depth, tone, examples, and exclusions`
   },
   "stage3-curriculum": {
     title: "Stage 3 - Curriculum Design",
     filename: "Stage 3 - Curriculum Design.md",
     description: "Designs the editable syllabus from scope, concepts, and self-assessment.",
     defaultModel: DEFAULT_MODEL,
-    template: `You are designing a personalised course syllabus for "{{topic}}", scoped to: {{scopeSummary}}.
+    template: `You are designing a personalised course syllabus.
+
+{{courseRequest}}
+
+Chosen scope: {{scopeSummary}}
 
 Selected scope nodes: {{scopeNodes}}
 
@@ -201,6 +212,7 @@ Requirements:
 - Every lesson must have a unique lessonId in kebab-case
 - prerequisites must only reference lessonIds that appear earlier in the curriculum
 - Keep the syllabus tightly scoped to "{{scopeSummary}}"
+- Honor the detailed course request when choosing module sequence, lesson depth, examples, format, and assessment emphasis
 - Prefer user sources when they are strong, but fill gaps with general knowledge when needed`
   },
   "stage4-lesson": {
@@ -208,9 +220,12 @@ Requirements:
     filename: "Stage 4 - Lesson Generation.md",
     description: "Writes one lesson at a time into the curriculum vault structure.",
     defaultModel: DEFAULT_MODEL,
-    template: `You are writing one lesson in an Obsidian-native personalised course on "{{topic}}".
+    template: `You are writing one lesson in an Obsidian-native personalised course.
 
 Course title: {{courseTitle}}
+Original course request:
+{{courseRequest}}
+
 Module: {{moduleTitle}}
 Lesson: {{lessonTitle}}
 Lesson brief: {{lessonDescription}}
@@ -237,7 +252,8 @@ Requirements:
 - Teach to the learner's current level implied by the curriculum brief
 - Include explanation, intuition, and at least one concrete example or worked scenario
 - Keep the lesson tightly scoped to the lesson brief and prerequisites
-- The lesson must be about "{{lessonTitle}}" within "{{moduleTitle}}" for the broader topic "{{topic}}"
+- The lesson must be about "{{lessonTitle}}" within "{{moduleTitle}}" for the broader course "{{courseTitle}}"
+- Honor the detailed course request when choosing tone, depth, examples, format, exclusions, and assessment style
 - Do not write about JSON, schemas, output formatting, validation, API structure, or prompt instructions unless the requested lesson is explicitly about those topics
 - difficulty must be one of: intro, intermediate, advanced
 - sourceRefs should list filenames only when the lesson materially uses user-provided sources; otherwise return []
@@ -636,16 +652,19 @@ var CacheService = class {
       ...Object.keys(data.courses),
       ...Object.keys(data.meta)
     ]);
-    const summaries = new Map(
-      [...courseIds].map((courseId) => [
+    const summaries = /* @__PURE__ */ new Map();
+    for (const courseId of courseIds) {
+      summaries.set(
         courseId,
-        this.deriveCourseSummary(courseId, data.courses[courseId], data.meta[courseId])
-      ])
-    );
+        await this.deriveCourseSummary(courseId, data.courses[courseId], data.meta[courseId])
+      );
+    }
     for (const summary of await this.discoverGeneratedCourseSummaries()) {
-      if (!summaries.has(summary.courseId)) {
+      const existingKey = findMatchingSummaryKey(summaries, summary);
+      if (existingKey)
+        summaries.set(existingKey, mergeGeneratedSummary(summaries.get(existingKey), summary));
+      else
         summaries.set(summary.courseId, summary);
-      }
     }
     return [...summaries.values()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }
@@ -658,7 +677,7 @@ var CacheService = class {
   deriveCourseTitle(courseId, course) {
     return course?.[3]?.curriculum?.title || course?.[0]?.seedTopic || this.readableCourseId(courseId);
   }
-  deriveCourseSummary(courseId, course, meta) {
+  async deriveCourseSummary(courseId, course, meta) {
     const currentStage = this.deriveCurrentStage(course);
     const allLessonIds = course?.[3]?.curriculum?.modules.flatMap((module2) => module2.lessons.map((lesson) => lesson.lessonId)) ?? [];
     const completedLessonIds = new Set(course?.[4]?.completedLessonIds ?? []);
@@ -666,6 +685,8 @@ var CacheService = class {
       completedLessonIds.size || course?.[4]?.progress.completedLessons || 0,
       allLessonIds.length
     );
+    const lessonPaths = allLessonIds.map((lessonId) => course?.[4]?.outputs?.lessonPaths?.[lessonId]).filter((path) => Boolean(path));
+    const noteProgress = await this.readNoteProgressSummary(lessonPaths, allLessonIds.length);
     return {
       courseId,
       title: this.deriveCourseTitle(courseId, course) ?? meta?.title ?? this.readableCourseId(courseId),
@@ -679,7 +700,8 @@ var CacheService = class {
       remainingLessonIds: allLessonIds.filter((lessonId) => !completedLessonIds.has(lessonId)),
       outputRootPath: course?.[4]?.outputs?.rootDir,
       courseIndexPath: course?.[4]?.outputs?.courseIndexPath,
-      hasStage3Cache: Boolean(course?.[3]?.curriculum)
+      hasStage3Cache: Boolean(course?.[3]?.curriculum),
+      noteProgress
     };
   }
   async discoverGeneratedCourseSummaries() {
@@ -709,6 +731,7 @@ var CacheService = class {
     const lessonPaths = markdownFiles.filter((path) => !isGeneratedCourseSupportFile(path));
     const title = await this.readGeneratedCourseTitle(courseIndexPath, folder);
     const updatedAt = await this.deriveGeneratedCourseUpdatedAt([courseIndexPath, ...lessonPaths]);
+    const noteProgress = await this.readNoteProgressSummary(lessonPaths);
     return {
       courseId: folder.split("/").pop() ?? folder,
       title,
@@ -722,8 +745,34 @@ var CacheService = class {
       remainingLessonIds: [],
       outputRootPath: folder,
       courseIndexPath,
-      hasStage3Cache: false
+      hasStage3Cache: false,
+      noteProgress
     };
+  }
+  async readNoteProgressSummary(lessonPaths, fallbackTotal = lessonPaths.length) {
+    const summary = {
+      totalNotes: Math.max(fallbackTotal, lessonPaths.length),
+      readNotes: 0,
+      flashcardsCreatedNotes: 0,
+      reviewedNotes: 0
+    };
+    const adapter = this.plugin.app?.vault?.adapter;
+    if (!adapter || lessonPaths.length === 0)
+      return summary;
+    for (const path of lessonPaths) {
+      try {
+        const content = await adapter.read(path);
+        const progress = parseNoteProgress(content);
+        if (progress.read)
+          summary.readNotes += 1;
+        if (progress.flashcardsCreated)
+          summary.flashcardsCreatedNotes += 1;
+        if (progress.reviewed)
+          summary.reviewedNotes += 1;
+      } catch {
+      }
+    }
+    return summary;
   }
   async listMarkdownFiles(folder) {
     const adapter = this.plugin.app.vault.adapter;
@@ -802,6 +851,44 @@ var CacheService = class {
 function isGeneratedCourseSupportFile(path) {
   const name = path.split("/").pop();
   return name === "Course Index.md" || name === "Module MOC.md";
+}
+function findMatchingSummaryKey(summaries, generated) {
+  if (summaries.has(generated.courseId))
+    return generated.courseId;
+  for (const [key, summary] of summaries) {
+    if (summary.outputRootPath && summary.outputRootPath === generated.outputRootPath)
+      return key;
+    if (summary.courseIndexPath && summary.courseIndexPath === generated.courseIndexPath)
+      return key;
+  }
+  return void 0;
+}
+function mergeGeneratedSummary(cached, generated) {
+  if (!cached)
+    return generated;
+  return {
+    ...cached,
+    updatedAt: maxIsoDate(cached.updatedAt, generated.updatedAt),
+    totalLessons: Math.max(cached.totalLessons, generated.totalLessons),
+    completedLessons: Math.max(cached.completedLessons, generated.completedLessons),
+    outputRootPath: cached.outputRootPath ?? generated.outputRootPath,
+    courseIndexPath: cached.courseIndexPath ?? generated.courseIndexPath,
+    noteProgress: generated.noteProgress.totalNotes > 0 ? generated.noteProgress : cached.noteProgress
+  };
+}
+function maxIsoDate(a, b) {
+  return a.localeCompare(b) >= 0 ? a : b;
+}
+function parseNoteProgress(content) {
+  return {
+    read: isChecked(content, "Read"),
+    flashcardsCreated: isChecked(content, "Flashcards created"),
+    reviewed: isChecked(content, "Reviewed")
+  };
+}
+function isChecked(content, label) {
+  const escapedLabel = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`^\\s*-\\s*\\[[xX]\\]\\s*${escapedLabel}\\s*$`, "m").test(content);
 }
 
 // src/services/lock.ts
@@ -5033,13 +5120,17 @@ async function runStage1(plugin, courseId) {
     const stage0 = await plugin.cacheService.readStage(courseId, 0);
     if (!stage0)
       throw new Error("Stage 0 not complete \u2014 run the topic explorer first.");
+    const courseRequest = getCourseRequest(stage0);
     const context = await plugin.contextService.build();
     const promptConfig = await plugin.loadPrompt("stage1-concepts");
     const scopeNodeTitles = stage0.selectedScope.map((id) => findNodeTitle(stage0.taxonomy, id)).filter((t) => t !== void 0).join(", ");
     const raw = await plugin.llmService.callJson(
       promptConfig.template,
       {
-        topic: stage0.seedTopic,
+        topic: courseRequest.title,
+        courseTitle: courseRequest.title,
+        courseDescription: courseRequest.description || "No additional course requirements provided.",
+        courseRequest: formatCourseRequest(courseRequest),
         scopeSummary: stage0.scopeSummary,
         scopeNodes: scopeNodeTitles || stage0.scopeSummary,
         contextSection: buildContextSection(context)
@@ -5101,17 +5192,21 @@ function findNodeTitle(taxonomy, id) {
 }
 
 // src/stages/stage0-topic.ts
-async function runStage0(plugin, seedTopic, courseId) {
+async function runStage0(plugin, request, courseId) {
+  const courseRequest = normalizeCourseRequest(request);
+  const seedTopic = courseRequest.title;
   await plugin.lockService.acquire(courseId, 0);
   const createdAt = (/* @__PURE__ */ new Date()).toISOString();
   await plugin.cacheService.writeMeta({
     courseId,
-    title: seedTopic,
+    title: courseRequest.title,
     createdAt
   });
   await plugin.cacheService.writeStage(courseId, 0, {
     courseId,
     seedTopic,
+    courseDescription: courseRequest.description,
+    courseRequest,
     taxonomy: [],
     selectedScope: [],
     scopeSummary: "",
@@ -5123,7 +5218,12 @@ async function runStage0(plugin, seedTopic, courseId) {
     const promptConfig = await plugin.loadPrompt("stage0-taxonomy");
     const raw = await plugin.llmService.callJson(
       promptConfig.template,
-      { topic: seedTopic },
+      {
+        topic: seedTopic,
+        courseTitle: courseRequest.title,
+        courseDescription: courseRequest.description || "No additional course requirements provided.",
+        courseRequest: formatCourseRequest(courseRequest)
+      },
       promptConfig.model
     );
     const validated = await validateAndRepair(
@@ -5135,6 +5235,8 @@ async function runStage0(plugin, seedTopic, courseId) {
     await plugin.cacheService.writeStage(courseId, 0, {
       courseId,
       seedTopic,
+      courseDescription: courseRequest.description,
+      courseRequest,
       taxonomy: validated.taxonomy,
       selectedScope: [],
       scopeSummary: "",
@@ -5153,6 +5255,28 @@ async function runStage0(plugin, seedTopic, courseId) {
     new import_obsidian4.Notice(`Delve: taxonomy generation failed \u2014 ${e.message}`);
     throw e;
   }
+}
+function getCourseRequest(stage0) {
+  return normalizeCourseRequest(stage0.courseRequest ?? {
+    title: stage0.seedTopic,
+    description: stage0.courseDescription ?? ""
+  });
+}
+function formatCourseRequest(request) {
+  const normalized = normalizeCourseRequest(request);
+  return [
+    `Course title: ${normalized.title}`,
+    `Detailed request: ${normalized.description || "No additional course requirements provided."}`
+  ].join("\n");
+}
+function normalizeCourseRequest(request) {
+  if (typeof request === "string") {
+    return { title: request.trim(), description: "" };
+  }
+  return {
+    title: request.title.trim(),
+    description: (request.description ?? "").trim()
+  };
 }
 async function disaggregateNode(plugin, seedTopic, node, selectedScope) {
   const promptConfig = await plugin.loadPrompt("stage0-disaggregate");
@@ -5214,10 +5338,14 @@ async function suggestRelated(plugin, seedTopic, existingTaxonomy, selectedScope
   return validated.topics;
 }
 async function confirmScope(plugin, courseId, seedTopic, taxonomy, selectedScope) {
+  const existingStage0 = await plugin.cacheService.readStage(courseId, 0);
+  const courseRequest = existingStage0 ? getCourseRequest(existingStage0) : { title: seedTopic, description: "" };
   const scopeSummary = selectedScope.map((id) => findNode(taxonomy, id)?.title ?? id).join(", ");
   const cache = {
     courseId,
     seedTopic,
+    courseDescription: courseRequest.description,
+    courseRequest,
     taxonomy,
     selectedScope,
     scopeSummary,
@@ -5274,7 +5402,8 @@ var TopicInputModal = class extends import_obsidian5.Modal {
   constructor(app, plugin) {
     super(app);
     this.plugin = plugin;
-    __publicField(this, "topic", "");
+    __publicField(this, "title", "");
+    __publicField(this, "description", "");
     __publicField(this, "courseId");
     this.courseId = generateCourseId();
   }
@@ -5283,12 +5412,12 @@ var TopicInputModal = class extends import_obsidian5.Modal {
     contentEl.addClass("delve-topic-input");
     contentEl.createEl("h2", { text: "Start a New Course" });
     contentEl.createEl("p", {
-      text: "Enter a broad topic and Delve will build a personalised course for you.",
+      text: "Give Delve a course title and any goals, audience, constraints, or style notes you want it to honor.",
       cls: "delve-subtitle"
     });
-    new import_obsidian5.Setting(contentEl).setName("Topic").setDesc("e.g. \u201CMachine Learning\u201D, \u201CLinear Algebra\u201D, \u201CKubernetes\u201D").addText((text) => {
-      text.setPlaceholder("Enter your topic\u2026").onChange((v) => {
-        this.topic = v.trim();
+    new import_obsidian5.Setting(contentEl).setName("Course title").setDesc("e.g. \u201CMachine Learning\u201D, \u201CLinear Algebra\u201D, \u201CKubernetes\u201D").addText((text) => {
+      text.setPlaceholder("Enter your course title\u2026").onChange((v) => {
+        this.title = v.trim();
       });
       text.inputEl.addClass("delve-topic-input__field");
       text.inputEl.addEventListener("keydown", (e) => {
@@ -5296,6 +5425,12 @@ var TopicInputModal = class extends import_obsidian5.Modal {
           void this.submit();
       });
       setTimeout(() => text.inputEl.focus(), 50);
+    });
+    new import_obsidian5.Setting(contentEl).setName("Detailed request").setDesc("Optional: goals, learner level, source preferences, format, assessment style, exclusions, or constraints.").addTextArea((text) => {
+      text.setPlaceholder("Describe the course you want Delve to build\u2026").onChange((v) => {
+        this.description = v.trim();
+      });
+      text.inputEl.addClass("delve-topic-input__description");
     });
     const btnRow = contentEl.createDiv("delve-topic-input__actions");
     const startBtn = btnRow.createEl("button", {
@@ -5305,8 +5440,8 @@ var TopicInputModal = class extends import_obsidian5.Modal {
     startBtn.addEventListener("click", () => void this.submit());
   }
   async submit() {
-    if (!this.topic) {
-      new import_obsidian5.Notice("Please enter a topic.");
+    if (!this.title) {
+      new import_obsidian5.Notice("Please enter a course title.");
       return;
     }
     if (!this.plugin.settings.openRouterApiKey) {
@@ -5314,7 +5449,10 @@ var TopicInputModal = class extends import_obsidian5.Modal {
       return;
     }
     this.close();
-    await runStage0(this.plugin, this.topic, this.courseId);
+    await runStage0(this.plugin, {
+      title: this.title,
+      description: this.description
+    }, this.courseId);
   }
   onClose() {
     this.contentEl.empty();
@@ -5743,8 +5881,9 @@ async function runStage3(plugin, courseId) {
     await plugin.lockService.release();
     throw new Error("Stage 0, 1, and 2 must be complete before curriculum design can begin.");
   }
+  const courseRequest = getCourseRequest(stage0);
   const context = await plugin.contextService.build();
-  const placeholder = emptyCurriculum(courseId, stage0.seedTopic);
+  const placeholder = emptyCurriculum(courseId, courseRequest.title);
   await plugin.cacheService.writeStage(courseId, 3, {
     courseId,
     curriculum: placeholder,
@@ -5757,7 +5896,7 @@ async function runStage3(plugin, courseId) {
     active: true,
     state: {
       courseId,
-      seedTopic: stage0.seedTopic,
+      seedTopic: courseRequest.title,
       curriculum: placeholder,
       sourceMode: context.mode,
       fileCount: context.fileCount,
@@ -5772,7 +5911,10 @@ async function runStage3(plugin, courseId) {
       promptConfig.template,
       {
         courseId,
-        topic: stage0.seedTopic,
+        topic: courseRequest.title,
+        courseTitle: courseRequest.title,
+        courseDescription: courseRequest.description || "No additional course requirements provided.",
+        courseRequest: formatCourseRequest(courseRequest),
         scopeSummary: stage0.scopeSummary,
         scopeNodes: buildScopeNodes(stage0.taxonomy, stage0.selectedScope) || stage0.scopeSummary,
         conceptProficiency: buildConceptProficiency(stage1.concepts, stage2.proficiencyMap),
@@ -5806,7 +5948,7 @@ async function runStage3(plugin, courseId) {
       active: true,
       state: {
         courseId,
-        seedTopic: stage0.seedTopic,
+        seedTopic: courseRequest.title,
         curriculum,
         sourceMode: context.mode,
         fileCount: context.fileCount,
@@ -5824,6 +5966,7 @@ async function resumeStage3(plugin, courseId) {
   const stage0 = await plugin.cacheService.readStage(courseId, 0);
   const stage3 = await plugin.cacheService.readStage(courseId, 3);
   if (stage0 && stage3?.status === "complete") {
+    const courseRequest = getCourseRequest(stage0);
     const context = await plugin.contextService.build();
     const leaf = plugin.app.workspace.getLeaf(false);
     await leaf.setViewState({
@@ -5831,7 +5974,7 @@ async function resumeStage3(plugin, courseId) {
       active: true,
       state: {
         courseId,
-        seedTopic: stage0.seedTopic,
+        seedTopic: courseRequest.title,
         curriculum: stage3.curriculum,
         sourceMode: context.mode,
         fileCount: context.fileCount,
@@ -6356,6 +6499,7 @@ async function runStage4(plugin, courseId, options = {}) {
     if (!stage0 || !stage3?.curriculum) {
       throw new Error("Stage 0 and Stage 3 must be complete before lesson generation can begin.");
     }
+    const courseRequest = getCourseRequest(stage0);
     const curriculum = stage3.curriculum;
     const context = await plugin.contextService.build();
     const outputs = buildOutputPaths(curriculum);
@@ -6386,9 +6530,12 @@ async function runStage4(plugin, courseId, options = {}) {
       new import_obsidian11.Notice("All lesson notes have already been generated.");
       return;
     }
-    const lessonsToGenerate = selectedLessonIds.length > 0 ? remainingLessons.filter((item) => selectedLessonIds.includes(item.lesson.lessonId)) : remainingLessons.slice(0, 1);
+    const generationMode = options.mode ?? (selectedLessonIds.length > 0 ? "selected" : "all");
+    const lessonsToGenerate = selectLessonsToGenerate(generationMode, remainingLessons, selectedLessonIds);
     if (lessonsToGenerate.length === 0) {
-      new import_obsidian11.Notice("None of the selected lessons still need to be generated.");
+      new import_obsidian11.Notice(
+        generationMode === "selected" ? "None of the selected lessons still need to be generated." : "No lessons need to be generated."
+      );
       return;
     }
     await plugin.cacheService.writeStage(courseId, 4, {
@@ -6406,7 +6553,7 @@ async function runStage4(plugin, courseId, options = {}) {
     });
     const promptConfig = await plugin.loadPrompt("stage4-lesson");
     new import_obsidian11.Notice(
-      lessonsToGenerate.length === 1 ? `Generating lesson ${completedLessonIds.length + 1} of ${totalLessons}: ${lessonsToGenerate[0].lesson.title}` : `Generating ${lessonsToGenerate.length} selected lessons.`
+      generationMode === "next" ? `Generating next lesson ${completedLessonIds.length + 1} of ${totalLessons}: ${lessonsToGenerate[0].lesson.title}` : lessonsToGenerate.length === remainingLessons.length ? `Generating all ${lessonsToGenerate.length} remaining lesson${lessonsToGenerate.length === 1 ? "" : "s"}.` : lessonsToGenerate.length === 1 ? `Generating lesson ${completedLessonIds.length + 1} of ${totalLessons}: ${lessonsToGenerate[0].lesson.title}` : `Generating ${lessonsToGenerate.length} selected lessons.`
     );
     const updatedCompletedLessonIds = [...completedLessonIds];
     const updatedGeneratedLessonSummaries = { ...generatedLessonSummaries };
@@ -6424,58 +6571,67 @@ async function runStage4(plugin, courseId, options = {}) {
         status: "pending",
         startedAt
       });
-      const promptVariables = {
-        topic: stage0.seedTopic,
-        courseTitle: curriculum.title,
-        moduleTitle: nextLesson.module.title,
-        lessonTitle: nextLesson.lesson.title,
-        lessonDescription: nextLesson.lesson.description,
-        prerequisiteSummary: describePrerequisites(nextLesson.lesson, lessonOrder, updatedGeneratedLessonSummaries),
-        generationMode: context.mode,
-        contextSection: buildContextSection3(context)
-      };
-      const renderedPrompt = renderPromptTemplate(promptConfig.template, promptVariables);
-      const raw = await plugin.llmService.callJson(
-        promptConfig.template,
-        promptVariables,
-        promptConfig.model
-      );
-      const validated = await validateLessonDraft(
-        plugin,
-        raw,
-        promptConfig.model,
-        renderedPrompt,
-        stage0.seedTopic,
-        nextLesson.module.title,
-        nextLesson.lesson
-      );
-      const draft = {
-        ...validated.lesson,
-        difficulty: validated.lesson.difficulty,
-        sourceRefs: validated.lesson.sourceRefs ?? []
-      };
-      const generatedAt = (/* @__PURE__ */ new Date()).toISOString();
-      await writeLessonOutput(
-        plugin,
-        curriculum,
-        outputs,
-        nextLesson.module,
-        nextLesson.lesson,
-        draft,
-        context.mode,
-        renderedPrompt,
-        {
-          model: promptConfig.model,
-          promptPath: promptConfig.path,
-          topic: stage0.seedTopic,
+      let draft;
+      try {
+        const promptVariables = {
+          topic: courseRequest.title,
+          courseTitle: curriculum.title,
+          courseRequest: formatCourseRequest(courseRequest),
+          courseDescription: courseRequest.description || "No additional course requirements provided.",
           moduleTitle: nextLesson.module.title,
-          lessonId: nextLesson.lesson.lessonId,
+          lessonTitle: nextLesson.lesson.title,
+          lessonDescription: nextLesson.lesson.description,
+          prerequisiteSummary: describePrerequisites(nextLesson.lesson, lessonOrder, updatedGeneratedLessonSummaries),
           generationMode: context.mode,
-          sourceFileCount: context.fileCount,
-          generatedAt,
-          repairUsed: validated.repairUsed
-        }
-      );
+          contextSection: buildContextSection3(context)
+        };
+        const renderedPrompt = renderPromptTemplate(promptConfig.template, promptVariables);
+        const raw = await plugin.llmService.callJson(
+          promptConfig.template,
+          promptVariables,
+          promptConfig.model
+        );
+        const validated = await validateLessonDraft(
+          plugin,
+          raw,
+          promptConfig.model,
+          renderedPrompt,
+          courseRequest.title,
+          nextLesson.module.title,
+          nextLesson.lesson
+        );
+        draft = {
+          ...validated.lesson,
+          difficulty: validated.lesson.difficulty,
+          sourceRefs: validated.lesson.sourceRefs ?? []
+        };
+        const generatedAt = (/* @__PURE__ */ new Date()).toISOString();
+        await writeLessonOutput(
+          plugin,
+          curriculum,
+          outputs,
+          nextLesson.module,
+          nextLesson.lesson,
+          draft,
+          context.mode,
+          renderedPrompt,
+          {
+            model: promptConfig.model,
+            promptPath: promptConfig.path,
+            topic: courseRequest.title,
+            moduleTitle: nextLesson.module.title,
+            lessonId: nextLesson.lesson.lessonId,
+            generationMode: context.mode,
+            sourceFileCount: context.fileCount,
+            generatedAt,
+            repairUsed: validated.repairUsed
+          }
+        );
+      } catch (error) {
+        throw new Error(
+          `Lesson generation failed for "${nextLesson.lesson.title}" (${nextLesson.lesson.lessonId}): ${error.message}`
+        );
+      }
       updatedCompletedLessonIds.push(nextLesson.lesson.lessonId);
       updatedGeneratedLessonSummaries[nextLesson.lesson.lessonId] = {
         title: draft.title,
@@ -6522,6 +6678,14 @@ async function runStage4(plugin, courseId, options = {}) {
   } finally {
     await plugin.lockService.release();
   }
+}
+function selectLessonsToGenerate(mode, remainingLessons, selectedLessonIds) {
+  if (mode === "next")
+    return remainingLessons.slice(0, 1);
+  if (mode === "selected") {
+    return remainingLessons.filter((item) => selectedLessonIds.includes(item.lesson.lessonId));
+  }
+  return remainingLessons;
 }
 function buildOutputPaths(curriculum) {
   const courseSlug = slugify(curriculum.title || curriculum.courseId);
@@ -6638,6 +6802,8 @@ async function writeSkeletonLesson(plugin, curriculum, outputs, module2, lesson)
     "**Prerequisites:**",
     prereqLines,
     "",
+    buildLessonProgressChecklist(),
+    "",
     "## Overview",
     "",
     "<!-- TODO: Write a concise overview introducing the key concepts of this lesson. -->",
@@ -6684,6 +6850,8 @@ async function writeLessonOutput(plugin, curriculum, outputs, module2, lesson, d
     navigation.breadcrumbs,
     "",
     `> ${draft.summary}`,
+    "",
+    buildLessonProgressChecklist(),
     "",
     draft.bodyMarkdown.trim(),
     "",
@@ -6809,6 +6977,15 @@ function buildCourseIndex(curriculum, outputs) {
   });
   lines.push("", `Canvas: ${wikiLinkFromPath(outputs.canvasPath)}`);
   return lines.join("\n");
+}
+function buildLessonProgressChecklist() {
+  return [
+    "## Progress",
+    "",
+    "- [ ] Read",
+    "- [ ] Flashcards created",
+    "- [ ] Reviewed"
+  ].join("\n");
 }
 function flattenLessons(curriculum) {
   return curriculum.modules.flatMap(
@@ -7175,7 +7352,7 @@ var SyllabusEditorView = class extends import_obsidian12.ItemView {
       await this.ensureStage0SeedTopic(courseId);
       this.dirty = false;
       const selectedLessonIds = [...this.selectedLessonIds];
-      await runStage4(this.plugin, courseId, { lessonIds: selectedLessonIds });
+      await runStage4(this.plugin, courseId, { mode: "selected", lessonIds: selectedLessonIds });
       selectedLessonIds.forEach((lessonId) => this.selectedLessonIds.delete(lessonId));
     } catch (e) {
       new import_obsidian12.Notice(`Could not generate lessons: ${e.message}`);
@@ -7393,8 +7570,35 @@ var HomeView = class extends import_obsidian13.ItemView {
       empty.createEl("p", { text: "Start a course to see its curriculum and lesson progress here." });
       return;
     }
+    this.renderProgressOverview(body, summaries);
     const grid = body.createDiv("delve-home__grid");
     summaries.forEach((summary) => this.renderCourseTile(grid, summary));
+  }
+  renderProgressOverview(parent, summaries) {
+    const totals = summaries.reduce(
+      (acc, summary) => {
+        acc.totalNotes += summary.noteProgress.totalNotes;
+        acc.readNotes += summary.noteProgress.readNotes;
+        acc.flashcardsCreatedNotes += summary.noteProgress.flashcardsCreatedNotes;
+        acc.reviewedNotes += summary.noteProgress.reviewedNotes;
+        acc.generatedLessons += summary.completedLessons;
+        acc.totalLessons += summary.totalLessons;
+        return acc;
+      },
+      {
+        totalNotes: 0,
+        readNotes: 0,
+        flashcardsCreatedNotes: 0,
+        reviewedNotes: 0,
+        generatedLessons: 0,
+        totalLessons: 0
+      }
+    );
+    const overview = parent.createDiv("delve-home__overview");
+    this.renderStat(overview, "Lessons generated", `${totals.generatedLessons}/${totals.totalLessons}`);
+    this.renderStat(overview, "Read", `${totals.readNotes}/${totals.totalNotes}`);
+    this.renderStat(overview, "Flashcards", `${totals.flashcardsCreatedNotes}/${totals.totalNotes}`);
+    this.renderStat(overview, "Reviewed", `${totals.reviewedNotes}/${totals.totalNotes}`);
   }
   renderCourseTile(parent, summary) {
     const tile = parent.createDiv("delve-home__tile");
@@ -7420,6 +7624,10 @@ var HomeView = class extends import_obsidian13.ItemView {
     const progress = tile.createDiv("delve-home__progress");
     const fill = progress.createDiv("delve-home__progress-fill");
     fill.style.width = `${getProgressPercent(summary)}%`;
+    const noteProgress = tile.createDiv("delve-home__note-progress");
+    this.renderStat(noteProgress, "Read", `${summary.noteProgress.readNotes}/${summary.noteProgress.totalNotes}`);
+    this.renderStat(noteProgress, "Flashcards", `${summary.noteProgress.flashcardsCreatedNotes}/${summary.noteProgress.totalNotes}`);
+    this.renderStat(noteProgress, "Reviewed", `${summary.noteProgress.reviewedNotes}/${summary.noteProgress.totalNotes}`);
     const tileActions = tile.createDiv("delve-home__tile-actions");
     const resumeBtn = tileActions.createEl("button", {
       text: summary.hasStage3Cache ? summary.currentStage >= 3 ? "Open curriculum" : "Resume" : "Open index",
@@ -7460,14 +7668,19 @@ var HomeView = class extends import_obsidian13.ItemView {
   async generateLessons(summary, mode) {
     try {
       if (mode === "remaining") {
-        await runStage4(this.plugin, summary.courseId, { lessonIds: summary.remainingLessonIds });
+        await runStage4(this.plugin, summary.courseId, { mode: "all" });
       } else {
-        await runStage4(this.plugin, summary.courseId);
+        await runStage4(this.plugin, summary.courseId, { mode: "next" });
       }
       await this.render();
     } catch (e) {
       new import_obsidian13.Notice(`Could not generate lessons: ${e.message}`);
     }
+  }
+  renderStat(parent, label, value) {
+    const stat = parent.createDiv("delve-home__stat");
+    stat.createEl("span", { text: value, cls: "delve-home__stat-value" });
+    stat.createEl("span", { text: label, cls: "delve-home__stat-label" });
   }
   async openCourseIndex(summary) {
     if (!summary.courseIndexPath)
@@ -7756,7 +7969,7 @@ var DelvePlugin = class extends import_obsidian16.Plugin {
     } else if (stage === 3) {
       await resumeStage3(this, courseId);
     } else if (stage === 4) {
-      await runStage4(this, courseId);
+      await runStage4(this, courseId, { mode: "all" });
     }
   }
   async handleLoadError(error) {

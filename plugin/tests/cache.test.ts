@@ -183,7 +183,10 @@ describe('cache: listCourseSummaries', () => {
         '# Generated Course\n\n## Modules\n\n- [[Module MOC]]\n  - [[lesson-one]]\n',
       ],
       ['4-Curriculum/generated-course/module-a/Module MOC.md', '# Module A'],
-      ['4-Curriculum/generated-course/module-a/lesson-one.md', '# Lesson One'],
+      [
+        '4-Curriculum/generated-course/module-a/lesson-one.md',
+        '# Lesson One\n\n## Progress\n\n- [x] Read\n- [x] Flashcards created\n- [ ] Reviewed\n',
+      ],
       ['4-Curriculum/generated-course/module-a/lesson-two.md', '# Lesson Two'],
     ]);
     const folders = new Map<string, string[]>([
@@ -228,7 +231,108 @@ describe('cache: listCourseSummaries', () => {
         outputRootPath: '4-Curriculum/generated-course',
         courseIndexPath: '4-Curriculum/generated-course/Course Index.md',
         hasStage3Cache: false,
+        noteProgress: {
+          totalNotes: 2,
+          readNotes: 1,
+          flashcardsCreatedNotes: 1,
+          reviewedNotes: 0,
+        },
       },
     ]);
+  });
+
+  it('does not duplicate a cached course that is also found in the curriculum folder', async () => {
+    const data: PluginData = {
+      courses: {
+        'course-123': {
+          3: {
+            courseId: 'course-123',
+            curriculum: {
+              courseId: 'course-123',
+              title: 'Music Theory',
+              modules: [
+                {
+                  moduleId: 'm1',
+                  title: 'Foundations',
+                  description: 'Basics',
+                  lessons: [
+                    { lessonId: 'l1', title: 'Pitch', description: 'Pitch', prerequisites: [] },
+                    { lessonId: 'l2', title: 'Rhythm', description: 'Rhythm', prerequisites: [] },
+                  ],
+                },
+              ],
+            },
+            status: 'complete',
+            completedAt: '2026-04-21T10:30:00.000Z',
+          },
+          4: {
+            courseId: 'course-123',
+            progress: {
+              totalLessons: 2,
+              completedLessons: 2,
+            },
+            outputs: {
+              rootDir: '4-Curriculum/music-theory',
+              courseIndexPath: '4-Curriculum/music-theory/Course Index.md',
+              canvasPath: '4-Curriculum/music-theory/Music Theory.canvas',
+              modulePaths: {
+                m1: '4-Curriculum/music-theory/01-foundations/Module MOC.md',
+              },
+              lessonPaths: {
+                l1: '4-Curriculum/music-theory/01-foundations/01-pitch.md',
+                l2: '4-Curriculum/music-theory/01-foundations/02-rhythm.md',
+              },
+            },
+            completedLessonIds: ['l1', 'l2'],
+            status: 'complete',
+            completedAt: '2026-04-21T11:00:00.000Z',
+          },
+        },
+      },
+      meta: {},
+    };
+    const files = new Map<string, string>([
+      ['4-Curriculum/music-theory/Course Index.md', '# Music Theory'],
+      ['4-Curriculum/music-theory/01-foundations/Module MOC.md', '# Foundations'],
+      ['4-Curriculum/music-theory/01-foundations/01-pitch.md', '# Pitch\n\n- [x] Read'],
+      ['4-Curriculum/music-theory/01-foundations/02-rhythm.md', '# Rhythm\n\n- [x] Read'],
+    ]);
+    const folders = new Map<string, string[]>([
+      ['4-Curriculum', ['4-Curriculum/music-theory']],
+      ['4-Curriculum/music-theory', ['4-Curriculum/music-theory/01-foundations']],
+      ['4-Curriculum/music-theory/01-foundations', []],
+    ]);
+
+    const plugin = {
+      loadData: vi.fn(async () => data),
+      saveData: vi.fn(async () => {}),
+      app: {
+        vault: {
+          adapter: {
+            exists: vi.fn(async (path: string) => files.has(path)),
+            read: vi.fn(async (path: string) => files.get(path) ?? ''),
+            stat: vi.fn(async () => ({ mtime: 3000 })),
+            list: vi.fn(async (path: string) => ({
+              files: [...files.keys()].filter(file => file.startsWith(`${path}/`) && !file.slice(path.length + 1).includes('/')),
+              folders: folders.get(path) ?? [],
+            })),
+          },
+        },
+      },
+    };
+
+    const cache = new CacheService(plugin as never);
+    const summaries = await cache.listCourseSummaries();
+
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]).toMatchObject({
+      courseId: 'course-123',
+      title: 'Music Theory',
+      outputRootPath: '4-Curriculum/music-theory',
+      noteProgress: {
+        totalNotes: 2,
+        readNotes: 2,
+      },
+    });
   });
 });

@@ -10,7 +10,7 @@ describe('stage4: runStage4', () => {
     plugin = makeMockPlugin();
   });
 
-  it('writes the next lesson immediately and leaves stage 4 pending until the course is done', async () => {
+  it('generates all remaining lessons by default', async () => {
     const stageWrites: Stage4Cache[] = [];
     const fileWrites: Array<{ path: string; content: string }> = [];
     const mkdir = vi.fn();
@@ -67,6 +67,124 @@ describe('stage4: runStage4', () => {
     });
     plugin.app.vault.adapter.mkdir = mkdir;
     plugin.app.vault.adapter.exists = vi.fn(async () => false);
+    plugin.llmService.callJson = vi
+      .fn()
+      .mockResolvedValueOnce({
+        lesson: {
+          title: 'Functors',
+          summary: 'A lesson on functors.',
+          difficulty: 'intro',
+          bodyMarkdown: '## Overview\n\nFunctors map objects and morphisms.',
+          sourceRefs: [],
+        },
+      })
+      .mockResolvedValueOnce({
+        lesson: {
+          title: 'Limits',
+          summary: 'A lesson on limits.',
+          difficulty: 'intermediate',
+          bodyMarkdown: '## Overview\n\nLimits capture universal cones.',
+          sourceRefs: [],
+        },
+      }) as never;
+
+    await runStage4(plugin as never, 'course-1');
+
+    expect(plugin.llmService.callJson).toHaveBeenCalledTimes(2);
+    expect(fileWrites.map(call => call.path)).toEqual(
+      expect.arrayContaining([
+        '4-Curriculum/category-theory-foundations/Course Index.md',
+        '4-Curriculum/category-theory-foundations/01-foundations/Module MOC.md',
+        '4-Curriculum/category-theory-foundations/01-foundations/01-functors.md',
+        '4-Curriculum/category-theory-foundations/Category Theory Foundations.canvas',
+      ])
+    );
+    expect(fileWrites.map(call => call.path)).toContain(
+      '4-Curriculum/category-theory-foundations/01-foundations/02-limits.md'
+    );
+    expect(fileWrites.find(call => call.path.endsWith('01-functors.md'))?.content).toContain(
+      'Previous: none | Next: [[02-limits]]'
+    );
+    expect(fileWrites.find(call => call.path.endsWith('01-functors.md'))?.content).toContain(
+      '[!note]- Generation Prompt'
+    );
+    expect(fileWrites.find(call => call.path.endsWith('01-functors.md'))?.content).toContain(
+      '## Progress\n\n- [ ] Read\n- [ ] Flashcards created\n- [ ] Reviewed'
+    );
+    expect(fileWrites.find(call => call.path.endsWith('01-functors.md'))?.content).toContain(
+      'Model: `anthropic/claude-3-5-sonnet`'
+    );
+    expect(fileWrites.find(call => call.path.endsWith('01-functors.md'))?.content).toContain(
+      'Repair pass used: no'
+    );
+    expect(stageWrites.at(-1)).toMatchObject({
+      courseId: 'course-1',
+      status: 'complete',
+      completedLessonIds: ['functors', 'limits'],
+      progress: {
+        totalLessons: 2,
+        completedLessons: 2,
+      },
+    });
+    expect(mkdir).toHaveBeenCalled();
+  });
+
+  it('generates only the next remaining lesson when requested', async () => {
+    const stageWrites: Stage4Cache[] = [];
+    const fileWrites: Array<{ path: string; content: string }> = [];
+
+    plugin.cacheService.readStage = vi.fn(async (_courseId: string, stage: number) => {
+      if (stage === 0) {
+        return makeStage0Cache({
+          courseId: 'course-1',
+          seedTopic: 'Category theory',
+          scopeSummary: 'Functors and limits',
+        });
+      }
+      if (stage === 3) {
+        return {
+          courseId: 'course-1',
+          status: 'complete',
+          curriculum: {
+            courseId: 'course-1',
+            title: 'Category Theory Foundations',
+            modules: [
+              {
+                moduleId: 'module-foundations',
+                title: 'Foundations',
+                description: 'Core ideas.',
+                lessons: [
+                  {
+                    lessonId: 'functors',
+                    title: 'Functors',
+                    description: 'Learn how structure-preserving maps work.',
+                    prerequisites: [],
+                  },
+                  {
+                    lessonId: 'limits',
+                    title: 'Limits',
+                    description: 'Understand categorical limits.',
+                    prerequisites: ['functors'],
+                  },
+                ],
+              },
+            ],
+          },
+        };
+      }
+      if (stage === 4) {
+        return stageWrites.at(-1);
+      }
+      return undefined;
+    }) as never;
+    plugin.cacheService.writeStage = vi.fn(async (_courseId: string, stage: number, cache: Stage4Cache) => {
+      if (stage === 4) stageWrites.push(cache);
+    }) as never;
+    plugin.app.vault.adapter.write = vi.fn(async (path: string, content: string) => {
+      fileWrites.push({ path, content });
+    });
+    plugin.app.vault.adapter.mkdir = vi.fn();
+    plugin.app.vault.adapter.exists = vi.fn(async () => false);
     plugin.llmService.callJson = vi.fn(async () => ({
       lesson: {
         title: 'Functors',
@@ -77,31 +195,14 @@ describe('stage4: runStage4', () => {
       },
     })) as never;
 
-    await runStage4(plugin as never, 'course-1');
+    await runStage4(plugin as never, 'course-1', { mode: 'next' });
 
     expect(plugin.llmService.callJson).toHaveBeenCalledTimes(1);
-    expect(fileWrites.map(call => call.path)).toEqual(
-      expect.arrayContaining([
-        '4-Curriculum/category-theory-foundations/Course Index.md',
-        '4-Curriculum/category-theory-foundations/01-foundations/Module MOC.md',
-        '4-Curriculum/category-theory-foundations/01-foundations/01-functors.md',
-        '4-Curriculum/category-theory-foundations/Category Theory Foundations.canvas',
-      ])
+    expect(fileWrites.map(call => call.path)).toContain(
+      '4-Curriculum/category-theory-foundations/01-foundations/01-functors.md'
     );
     expect(fileWrites.map(call => call.path)).not.toContain(
       '4-Curriculum/category-theory-foundations/01-foundations/02-limits.md'
-    );
-    expect(fileWrites.find(call => call.path.endsWith('01-functors.md'))?.content).toContain(
-      'Previous: none | Next: [[02-limits]]'
-    );
-    expect(fileWrites.find(call => call.path.endsWith('01-functors.md'))?.content).toContain(
-      '[!note]- Generation Prompt'
-    );
-    expect(fileWrites.find(call => call.path.endsWith('01-functors.md'))?.content).toContain(
-      'Model: `anthropic/claude-3-5-sonnet`'
-    );
-    expect(fileWrites.find(call => call.path.endsWith('01-functors.md'))?.content).toContain(
-      'Repair pass used: no'
     );
     expect(stageWrites.at(-1)).toMatchObject({
       courseId: 'course-1',
@@ -112,7 +213,6 @@ describe('stage4: runStage4', () => {
         completedLessons: 1,
       },
     });
-    expect(mkdir).toHaveBeenCalled();
   });
 
   it('resumes from cache and completes the remaining lesson', async () => {
@@ -319,6 +419,7 @@ describe('stage4: runStage4', () => {
       }) as never;
 
     await runStage4(plugin as never, 'course-1', {
+      mode: 'selected',
       lessonIds: ['limits', 'functors'],
     });
 

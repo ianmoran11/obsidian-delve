@@ -8,3 +8,24 @@ Completed task 1: Delve: add bases home page.
 - Verified in Obsidian using Computer Use that `Delve: Open Delve home` appears in the command palette and opens the new home dashboard.
 - Bumped the plugin release metadata to `0.1.6` so BRAT can register the update from `manifest.json` and `versions.json`.
 - Added generated-course discovery for existing `4-Curriculum/*/Course Index.md` folders and bumped the plugin release metadata to `0.1.7`.
+
+Completed task 2: Delve: allow for course description, not just title.
+
+- Updated the new-course modal to collect a short course title plus a larger detailed request field.
+- Added structured course request persistence to Stage 0 while preserving `seedTopic` compatibility for existing courses.
+- Passed the formatted course request into Stage 0, Stage 1, Stage 3, and Stage 4 prompt variables so goals, audience, constraints, format, and style guidance can inform generation.
+- Updated default prompt templates to explicitly honor the detailed course request.
+- Added regression tests for structured request storage, prompt variables, Stage 3 propagation, and legacy Stage 0 cache compatibility.
+- Ran targeted tests, full typecheck, and production build successfully.
+- Copied the rebuilt plugin into the active `engram` vault and verified in Obsidian using Computer Use that the Start New Course modal displays both `Course title` and `Detailed request`.
+- Captured proof screenshot showing both populated fields at `artifacts/task2-course-description-modal.png`.
+
+Completed task 3: Delve: prevent lesson generation from stopping.
+
+- Changed Stage 4 so a plain `runStage4(plugin, courseId)` now generates all remaining lessons instead of silently stopping after one.
+- Added explicit Stage 4 modes: `all`, `next`, and `selected`.
+- Updated resume behavior to continue all remaining lessons, the Delve home dashboard to use `next` or `all` based on the clicked action, and the syllabus editor to use `selected` for checked lessons.
+- Improved lesson-generation failure context so errors name the lesson title and id that failed.
+- Updated Stage 4 tests for default all-remaining generation, explicit next-lesson generation, selected generation, and resume behavior.
+- Ran `npm test -- tests/stage4-generate.test.ts`, `npm run typecheck`, and `npm run build` successfully from `plugin/`.
+- Verified in Obsidian using Computer Use that the Delve dashboard opens and shows the generated course statuses and disabled generation buttons for fully complete courses.

@@ -4,6 +4,7 @@ import type { Concept, Stage1Cache, TaxonomyNode } from '../interfaces';
 import type { ContextPayload } from '../services/context';
 import { Stage1ResponseSchema, validateAndRepair } from '../services/validator';
 import { CONCEPTS_VIEW_TYPE } from '../constants';
+import { formatCourseRequest, getCourseRequest } from './stage0-topic';
 
 export async function runStage1(
   plugin: DelvePlugin,
@@ -26,6 +27,7 @@ export async function runStage1(
 
     const stage0 = await plugin.cacheService.readStage(courseId, 0);
     if (!stage0) throw new Error('Stage 0 not complete — run the topic explorer first.');
+    const courseRequest = getCourseRequest(stage0);
 
     const context = await plugin.contextService.build();
     const promptConfig = await plugin.loadPrompt('stage1-concepts');
@@ -38,7 +40,10 @@ export async function runStage1(
     const raw = await plugin.llmService.callJson<{ concepts: Concept[] }>(
       promptConfig.template,
       {
-        topic: stage0.seedTopic,
+        topic: courseRequest.title,
+        courseTitle: courseRequest.title,
+        courseDescription: courseRequest.description || 'No additional course requirements provided.',
+        courseRequest: formatCourseRequest(courseRequest),
         scopeSummary: stage0.scopeSummary,
         scopeNodes: scopeNodeTitles || stage0.scopeSummary,
         contextSection: buildContextSection(context),

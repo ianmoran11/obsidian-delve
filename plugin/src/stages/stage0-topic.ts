@@ -13,19 +13,23 @@ import { runStage1 } from './stage1-concepts';
 
 export async function runStage0(
   plugin: DelvePlugin,
-  seedTopic: string,
+  request: string | { title: string; description?: string },
   courseId: string
 ): Promise<void> {
+  const courseRequest = normalizeCourseRequest(request);
+  const seedTopic = courseRequest.title;
   await plugin.lockService.acquire(courseId, 0);
   const createdAt = new Date().toISOString();
   await plugin.cacheService.writeMeta({
     courseId,
-    title: seedTopic,
+    title: courseRequest.title,
     createdAt,
   });
   await plugin.cacheService.writeStage(courseId, 0, {
     courseId,
     seedTopic,
+    courseDescription: courseRequest.description,
+    courseRequest,
     taxonomy: [],
     selectedScope: [],
     scopeSummary: '',
@@ -39,7 +43,12 @@ export async function runStage0(
     const promptConfig = await plugin.loadPrompt('stage0-taxonomy');
     const raw = await plugin.llmService.callJson<{ taxonomy: TaxonomyNode[] }>(
       promptConfig.template,
-      { topic: seedTopic },
+      {
+        topic: seedTopic,
+        courseTitle: courseRequest.title,
+        courseDescription: courseRequest.description || 'No additional course requirements provided.',
+        courseRequest: formatCourseRequest(courseRequest),
+      },
       promptConfig.model
     );
 
@@ -53,6 +62,8 @@ export async function runStage0(
     await plugin.cacheService.writeStage(courseId, 0, {
       courseId,
       seedTopic,
+      courseDescription: courseRequest.description,
+      courseRequest,
       taxonomy: validated.taxonomy,
       selectedScope: [],
       scopeSummary: '',
@@ -72,6 +83,33 @@ export async function runStage0(
     new Notice(`Delve: taxonomy generation failed — ${(e as Error).message}`);
     throw e;
   }
+}
+
+export function getCourseRequest(stage0: Stage0Cache): { title: string; description: string } {
+  return normalizeCourseRequest(stage0.courseRequest ?? {
+    title: stage0.seedTopic,
+    description: stage0.courseDescription ?? '',
+  });
+}
+
+export function formatCourseRequest(request: { title: string; description?: string }): string {
+  const normalized = normalizeCourseRequest(request);
+  return [
+    `Course title: ${normalized.title}`,
+    `Detailed request: ${normalized.description || 'No additional course requirements provided.'}`,
+  ].join('\n');
+}
+
+function normalizeCourseRequest(
+  request: string | { title: string; description?: string }
+): { title: string; description: string } {
+  if (typeof request === 'string') {
+    return { title: request.trim(), description: '' };
+  }
+  return {
+    title: request.title.trim(),
+    description: (request.description ?? '').trim(),
+  };
 }
 
 export async function disaggregateNode(
@@ -151,6 +189,8 @@ export async function confirmScope(
   taxonomy: TaxonomyNode[],
   selectedScope: string[]
 ): Promise<void> {
+  const existingStage0 = await plugin.cacheService.readStage(courseId, 0);
+  const courseRequest = existingStage0 ? getCourseRequest(existingStage0) : { title: seedTopic, description: '' };
   const scopeSummary = selectedScope
     .map(id => findNode(taxonomy, id)?.title ?? id)
     .join(', ');
@@ -158,6 +198,8 @@ export async function confirmScope(
   const cache: Stage0Cache = {
     courseId,
     seedTopic,
+    courseDescription: courseRequest.description,
+    courseRequest,
     taxonomy,
     selectedScope,
     scopeSummary,

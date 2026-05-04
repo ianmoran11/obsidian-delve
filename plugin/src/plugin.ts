@@ -216,7 +216,7 @@ export default class DelvePlugin extends Plugin {
     } else if (stage === 3) {
       await resumeStage3(this, courseId);
     } else if (stage === 4) {
-      await runStage4(this, courseId);
+      await runStage4(this, courseId, { mode: 'all' });
     }
   }
 

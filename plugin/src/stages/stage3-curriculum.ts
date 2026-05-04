@@ -11,6 +11,7 @@ import type {
 import type { ContextPayload } from '../services/context';
 import { Stage3ResponseSchema, validateAndRepair } from '../services/validator';
 import { SYLLABUS_VIEW_TYPE } from '../constants';
+import { formatCourseRequest, getCourseRequest } from './stage0-topic';
 
 export async function runStage3(
   plugin: DelvePlugin,
@@ -25,9 +26,10 @@ export async function runStage3(
     await plugin.lockService.release();
     throw new Error('Stage 0, 1, and 2 must be complete before curriculum design can begin.');
   }
+  const courseRequest = getCourseRequest(stage0);
 
   const context = await plugin.contextService.build();
-  const placeholder = emptyCurriculum(courseId, stage0.seedTopic);
+  const placeholder = emptyCurriculum(courseId, courseRequest.title);
   await plugin.cacheService.writeStage(courseId, 3, {
     courseId,
     curriculum: placeholder,
@@ -41,7 +43,7 @@ export async function runStage3(
     active: true,
     state: {
       courseId,
-      seedTopic: stage0.seedTopic,
+      seedTopic: courseRequest.title,
       curriculum: placeholder,
       sourceMode: context.mode,
       fileCount: context.fileCount,
@@ -58,7 +60,10 @@ export async function runStage3(
       promptConfig.template,
       {
         courseId,
-        topic: stage0.seedTopic,
+        topic: courseRequest.title,
+        courseTitle: courseRequest.title,
+        courseDescription: courseRequest.description || 'No additional course requirements provided.',
+        courseRequest: formatCourseRequest(courseRequest),
         scopeSummary: stage0.scopeSummary,
         scopeNodes: buildScopeNodes(stage0.taxonomy, stage0.selectedScope) || stage0.scopeSummary,
         conceptProficiency: buildConceptProficiency(stage1.concepts, stage2.proficiencyMap),
@@ -95,7 +100,7 @@ export async function runStage3(
       active: true,
       state: {
         courseId,
-        seedTopic: stage0.seedTopic,
+        seedTopic: courseRequest.title,
         curriculum,
         sourceMode: context.mode,
         fileCount: context.fileCount,
@@ -118,6 +123,7 @@ export async function resumeStage3(
   const stage3 = await plugin.cacheService.readStage(courseId, 3);
 
   if (stage0 && stage3?.status === 'complete') {
+    const courseRequest = getCourseRequest(stage0);
     const context = await plugin.contextService.build();
     const leaf = plugin.app.workspace.getLeaf(false);
     await leaf.setViewState({
@@ -125,7 +131,7 @@ export async function resumeStage3(
       active: true,
       state: {
         courseId,
-        seedTopic: stage0.seedTopic,
+        seedTopic: courseRequest.title,
         curriculum: stage3.curriculum,
         sourceMode: context.mode,
         fileCount: context.fileCount,

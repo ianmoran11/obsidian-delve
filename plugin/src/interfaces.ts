@@ -11,6 +11,11 @@ export interface TaxonomyNode {
 export interface Stage0Cache {
   courseId: CourseId;
   seedTopic: string;
+  courseDescription?: string;
+  courseRequest?: {
+    title: string;
+    description: string;
+  };
   taxonomy: TaxonomyNode[];
   selectedScope: string[];
   scopeSummary: string;
@@ -142,6 +147,14 @@ export interface CourseSummary {
   outputRootPath?: string;
   courseIndexPath?: string;
   hasStage3Cache: boolean;
+  noteProgress: NoteProgressSummary;
+}
+
+export interface NoteProgressSummary {
+  totalNotes: number;
+  readNotes: number;
+  flashcardsCreatedNotes: number;
+  reviewedNotes: number;
 }
 
 export interface PluginData {
